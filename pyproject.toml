@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cutweave"
+version = "0.1.0"
+description = "Montage vidéo déterministe et local pour Windows"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+authors = [{ name = "CUTWEAVE contributors" }]
+dependencies = [
+    "PySide6-Essentials>=6.7,<7",
+    "PySide6-Addons>=6.7,<7",
+    "opencv-contrib-python-headless>=4.10,<5",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0,<9"]
+build = ["pyinstaller>=6.10,<7"]
+
+[project.scripts]
+cutweave-cli = "cutweave.cli:main"
+
+[project.gui-scripts]
+cutweave = "cutweave.app:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+

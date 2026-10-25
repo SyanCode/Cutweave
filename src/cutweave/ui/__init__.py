@@ -1,0 +1,2 @@
+"""Interface Qt de CUTWEAVE."""
+

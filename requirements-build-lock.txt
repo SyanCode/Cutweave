@@ -1,0 +1,6 @@
+# Outils de construction Windows (en plus de requirements-lock.txt), Python 3.12 x86-64
+altgraph==0.17.5
+pefile==2024.8.26
+pyinstaller==6.22.3
+pyinstaller-hooks-contrib==2026.9
+pywin32-ctypes==0.2.3
