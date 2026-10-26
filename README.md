@@ -109,7 +109,8 @@ La page **Bibliothèque** permet d'écouter chaque son et de l'ajouter au projet
 
 ## Interface
 
-- **Studio** (accueil), **Éditeur** (réglages détaillés par étape), **Bibliothèque**, historique, journaux et paramètres dans la barre latérale ; thème sombre unifié. Les traitements s'affichent dans la barre de progression du bas (bouton *Annuler*, panneau *Journal* repliable).
+- **Studio** (accueil), **Éditeur** (réglages détaillés par étape), **Bibliothèque**, historique, journaux et paramètres dans la barre latérale ; thème sombre unifié, icônes vectorielles (aucun emoji), boutons au style homogène (principal, secondaire, discret, danger) y compris dans les boîtes de dialogue, textes standards de Qt en français.
+- **Adaptatif** : la barre latérale se réduit à ses icônes sous 1180 px de large (bouton pour la réduire ou l'agrandir à la main), les cartes et les réglages passent de 3 à 1 colonne, le Studio empile lecteur et variantes sur fenêtre étroite, chaque onglet de l'éditeur défile et ses rangées de boutons passent à la ligne. Taille minimale 900 × 600 ; position et taille de la fenêtre mémorisées. Les traitements s'affichent dans la barre de progression du bas (bouton *Annuler*, panneau *Journal* repliable).
 - **Barre latérale** : nouveau/ouvrir un projet, import, accès direct à chaque éditeur, historique des tâches, journaux, paramètres.
 - **Médias** : import de fichiers ou d'un dossier (récursif), tableau nom / durée / résolution / images/s / audio ; les fichiers introuvables sont marqués `[manquant]` (menu *Projet > Relier les médias manquants* pour les retrouver par nom dans un dossier).
 - **Aperçu** : lecture, pause, déplacement dans le temps (lecteur Qt Multimedia).

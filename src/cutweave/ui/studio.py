@@ -10,9 +10,9 @@ from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPainterPath, QPixmap
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtMultimediaWidgets import QVideoWidget
 from PySide6.QtWidgets import (
-    QButtonGroup, QCheckBox, QComboBox, QFileDialog, QFrame, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QListWidget,
-    QListWidgetItem, QMessageBox, QProgressBar, QPushButton, QScrollArea, QSizePolicy, QSlider, QStackedWidget,
-    QVBoxLayout, QWidget,
+    QBoxLayout, QCheckBox, QComboBox, QFileDialog, QFrame, QHBoxLayout, QLabel, QLineEdit, QListWidget,
+    QListWidgetItem, QMessageBox, QProgressBar, QScrollArea, QSizePolicy, QSlider, QStackedWidget, QVBoxLayout,
+    QWidget,
 )
 
 from cutweave.assets.library import LOOKS, music_catalog
@@ -22,45 +22,65 @@ from cutweave.autoedit.service import (
 )
 from cutweave.media.files import collect_video_files
 from cutweave.media.thumbnails import ThumbnailError, create_video_thumbnail
-from cutweave.ui import theme
+from cutweave.ui import icons, theme
 from cutweave.ui.theme import set_role
+from cutweave.ui.widgets import (
+    FormGrid, ReflowGrid, Segmented, apply_icon, button, card, icon_badge, label, rgba,
+)
+
+# Compatibilité : la bibliothèque et les tests importent ces noms depuis ce module.
+_label, _button, _card, _rgba = label, button, card, rgba
 
 DURATIONS = (("Auto (selon le style)", None), ("15 s", 15.0), ("30 s", 30.0), ("45 s", 45.0), ("1 min", 60.0),
              ("1 min 30", 90.0), ("3 min", 180.0))
+MODE_ICONS = {"edit": "zap", "vlog": "mic", "cinematic": "film", "highlights": "flame", "story": "camera",
+              "talking": "user"}
+MAX_CONTENT_WIDTH = 1120
 
 
-def _label(text: str, role: str | None = None, *, wrap: bool = False) -> QLabel:
-    label = QLabel(text)
-    if role:
-        label.setProperty("role", role)
-    label.setWordWrap(wrap)
-    return label
+def compact_combo(combo: QComboBox, *, chars: int = 12) -> QComboBox:
+    """Liste déroulante qui peut rétrécir (texte tronqué) mais dont la liste s'ouvre à la largeur utile."""
+    combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+    combo.setMinimumContentsLength(chars)
+    combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+    metrics = combo.fontMetrics()
+    widest = max((metrics.horizontalAdvance(combo.itemText(i)) for i in range(combo.count())), default=0)
+    combo.view().setMinimumWidth(widest + 48)
+    combo.setCursor(Qt.CursorShape.PointingHandCursor)
+    return combo
 
 
-def _button(text: str, variant: str | None = None, *, checkable: bool = False) -> QPushButton:
-    button = QPushButton(text)
-    if variant:
-        button.setProperty("variant", variant)
-    button.setCheckable(checkable)
-    button.setCursor(Qt.CursorShape.PointingHandCursor)
-    return button
+def centered_column(content_width: int = MAX_CONTENT_WIDTH, margins=(36, 28, 36, 36)):
+    """Colonne centrée de largeur maximale fixe, qui occupe toute la largeur quand la fenêtre est étroite."""
+    body = QWidget()
+    body.setObjectName("scrollBody")
+    row = QHBoxLayout(body)
+    row.setContentsMargins(*margins)
+    row.setSpacing(0)
+    inner = QWidget()
+    inner.setObjectName("scrollBody")
+    inner.setMaximumWidth(content_width)
+    inner.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+    column = QVBoxLayout(inner)
+    column.setContentsMargins(0, 0, 0, 0)
+    column.setSpacing(18)
+    row.addStretch(1)
+    row.addWidget(inner, 1000)
+    row.addStretch(1)
+    return body, column
 
 
-def _card(*, padding: int = 18, spacing: int = 12) -> tuple[QFrame, QVBoxLayout]:
-    frame = QFrame()
-    frame.setProperty("card", "true")
-    layout = QVBoxLayout(frame)
-    layout.setContentsMargins(padding, padding, padding, padding)
-    layout.setSpacing(spacing)
-    return frame, layout
+def scroll_area(body: QWidget) -> QScrollArea:
+    area = QScrollArea()
+    area.setObjectName("pageScroll")
+    area.setWidgetResizable(True)
+    area.setFrameShape(QFrame.Shape.NoFrame)
+    area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+    area.setWidget(body)
+    return area
 
 
-def _rgba(color: str, alpha: float) -> str:
-    value = QColor(color)
-    return f"rgba({value.red()}, {value.green()}, {value.blue()}, {int(alpha * 255)})"
-
-
-def _rounded_pixmap(path: str | None, size: QSize, radius: int = 10, placeholder: str = "🎞") -> QPixmap:
+def _rounded_pixmap(path: str | None, size: QSize, radius: int = 10, placeholder: str = "film") -> QPixmap:
     canvas = QPixmap(size)
     canvas.fill(Qt.GlobalColor.transparent)
     painter = QPainter(canvas)
@@ -71,11 +91,8 @@ def _rounded_pixmap(path: str | None, size: QSize, radius: int = 10, placeholder
     source = QPixmap(path) if path and Path(path).is_file() else QPixmap()
     if source.isNull():
         painter.fillRect(canvas.rect(), QColor(theme.SURFACE_3))
-        painter.setPen(QColor(theme.MUTED))
-        font = QFont()
-        font.setPointSize(max(12, size.height() // 5))
-        painter.setFont(font)
-        painter.drawText(canvas.rect(), Qt.AlignmentFlag.AlignCenter, placeholder)
+        glyph = icons.pixmap(placeholder, theme.FAINT, 28, 1.0)
+        painter.drawPixmap((size.width() - 28) // 2, (size.height() - 28) // 2, glyph)
     else:
         scaled = source.scaled(size, Qt.AspectRatioMode.KeepAspectRatioByExpanding,
                                Qt.TransformationMode.SmoothTransformation)
@@ -122,27 +139,23 @@ class DropZone(QFrame):
         self.setObjectName("dropZone")
         self.setAcceptDrops(True)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setMinimumHeight(170)
+        self.setMinimumHeight(150)
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(24, 24, 24, 24)
-        layout.setSpacing(6)
+        layout.setContentsMargins(24, 22, 24, 22)
+        layout.setSpacing(8)
         layout.addStretch()
-        icon = QLabel("⇪")
-        icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        icon.setFixedSize(56, 56)
-        icon.setStyleSheet(f"background: {_rgba(theme.ACCENT, 0.18)}; color: {theme.ACCENT}; border-radius: 28px;"
-                           "font-size: 22pt; font-weight: 700;")
         row = QHBoxLayout()
         row.addStretch()
-        row.addWidget(icon)
+        row.addWidget(icon_badge("upload", theme.ACCENT, size=52, glyph=24, radius=26))
         row.addStretch()
         layout.addLayout(row)
-        self.title = _label("Glisse tes rushs ici", "h2")
+        self.title = label("Glisse tes rushs ici", "h2")
         self.title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(self.title)
-        hint = _label("Vidéos ou dossiers entiers · MP4, MOV, MKV, AVI… · ou clique pour parcourir", "muted")
-        hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(hint)
+        self.hint = label("Vidéos ou dossiers entiers · MP4, MOV, MKV, AVI… · ou clique pour parcourir", "muted",
+                          wrap=True)
+        self.hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self.hint)
         layout.addStretch()
 
     def mouseReleaseEvent(self, event):
@@ -170,51 +183,16 @@ class ModeCard(ClickableCard):
     def __init__(self, mode, parent=None):
         super().__init__(parent)
         self.mode = mode
-        self.setMinimumHeight(132)
+        self.setMinimumHeight(118)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(8)
         top = QHBoxLayout()
-        glyph = QLabel(mode.glyph)
-        glyph.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        glyph.setFixedSize(40, 40)
-        glyph.setStyleSheet(f"background: {_rgba(mode.accent, 0.18)}; border-radius: 12px; font-size: 16pt;"
-                            f"color: {mode.accent};")
-        top.addWidget(glyph)
-        title = _label(mode.title, "h3")
-        top.addWidget(title, 1)
+        top.setSpacing(12)
+        top.addWidget(icon_badge(MODE_ICONS.get(mode.key, "sparkles"), mode.accent))
+        top.addWidget(label(mode.title, "h3"), 1)
         layout.addLayout(top)
-        layout.addWidget(_label(mode.tagline, "muted", wrap=True), 1)
-
-
-class Segmented(QWidget):
-    changed = Signal(object)
-
-    def __init__(self, options, parent=None):
-        super().__init__(parent)
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(6)
-        self.group = QButtonGroup(self)
-        self.group.setExclusive(True)
-        self._values = []
-        for index, (text, value) in enumerate(options):
-            button = _button(text, "segment", checkable=True)
-            self.group.addButton(button, index)
-            layout.addWidget(button)
-            self._values.append(value)
-        layout.addStretch()
-        self.group.idClicked.connect(lambda index: self.changed.emit(self._values[index]))
-        if self._values:
-            self.group.button(0).setChecked(True)
-
-    def value(self):
-        index = self.group.checkedId()
-        return self._values[index] if index >= 0 else None
-
-    def set_value(self, value):
-        if value in self._values:
-            self.group.button(self._values.index(value)).setChecked(True)
+        layout.addWidget(label(mode.tagline, "muted", wrap=True), 1)
 
 
 class VariantCard(ClickableCard):
@@ -230,29 +208,24 @@ class VariantCard(ClickableCard):
         thumb = QLabel()
         thumb.setFixedSize(size)
         thumb.setPixmap(_rounded_pixmap(result.thumbnail, size))
-        layout.addWidget(thumb)
+        layout.addWidget(thumb, 0, Qt.AlignmentFlag.AlignTop)
         text = QVBoxLayout()
-        text.setSpacing(4)
+        text.setSpacing(5)
         head = QHBoxLayout()
-        badge = _label(result.letter, "badge")
+        head.setSpacing(8)
+        badge = label(result.letter, "badge")
         badge.setFixedSize(26, 26)
         badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
         head.addWidget(badge)
-        mode = MODES_BY_KEY.get(result.mode)
-        head.addWidget(_label(f"{result.name}", "h3"))
-        head.addStretch()
+        head.addWidget(label(result.name, "h3"), 1)
         text.addLayout(head)
-        text.addWidget(_label(f"{mode.title if mode else result.mode} · {result.blurb}", "muted", wrap=True))
-        chips = QHBoxLayout()
-        chips.setSpacing(6)
+        mode = MODES_BY_KEY.get(result.mode)
+        text.addWidget(label(f"{mode.title if mode else result.mode} · {result.blurb}", "muted", wrap=True))
         minutes, seconds = divmod(int(round(result.duration)), 60)
-        chips_list = [f"{minutes}:{seconds:02d}", f"{result.shots} plans", f"♪ {result.music_title}", result.look_title]
+        facts = [f"{minutes}:{seconds:02d}", f"{result.shots} plans", f"♪ {result.music_title}", result.look_title]
         if result.draft:
-            chips_list.append("⚡ aperçu 540p")
-        for chip in chips_list:
-            chips.addWidget(_label(chip, "chip"))
-        chips.addStretch()
-        text.addLayout(chips)
+            facts.append("aperçu 540p")
+        text.addWidget(label("  ·  ".join(facts), "faint", wrap=True))
         text.addStretch()
         layout.addLayout(text, 1)
 
@@ -270,6 +243,7 @@ class StudioPage(QWidget):
         self.main = main
         self.selected_mode = MODES[0].key
         self.results: list[VariantResult] = []
+        self.cards: dict[str, VariantCard] = {}
         self.current: VariantResult | None = None
         self._custom_music: str | None = None
         root = QVBoxLayout(self)
@@ -283,56 +257,36 @@ class StudioPage(QWidget):
         self._select_mode(self.selected_mode)
         self._update_cta()
 
-    # --- Construction ---------------------------------------------------------------------------
-
-    def _scroll(self, body: QWidget) -> QScrollArea:
-        scroll = QScrollArea()
-        scroll.setObjectName("pageScroll")
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.Shape.NoFrame)
-        scroll.setWidget(body)
-        return scroll
+    # --- Création -------------------------------------------------------------------------------
 
     def _build_create(self) -> QWidget:
-        body = QWidget()
-        body.setObjectName("scrollBody")
-        outer = QHBoxLayout(body)
-        outer.setContentsMargins(36, 28, 36, 36)
-        column = QVBoxLayout()
-        column.setSpacing(18)
-        outer.addStretch(1)
-        outer.addLayout(column, 12)
-        outer.addStretch(1)
+        body, column = centered_column()
 
         header = QHBoxLayout()
         titles = QVBoxLayout()
         titles.setSpacing(2)
-        titles.addWidget(_label("Nouveau montage", "h1"))
-        self.project_hint = _label("Dépose tes rushs, choisis un style : CUTWEAVE monte tout seul, en local.", "muted")
+        titles.addWidget(label("Nouveau montage", "h1"))
+        self.project_hint = label("Dépose tes rushs, choisis un style : CUTWEAVE monte tout seul, en local.", "muted",
+                                  wrap=True)
         titles.addWidget(self.project_hint)
         header.addLayout(titles, 1)
-        self.history_button = _button("Mes variantes →", "ghost")
+        self.history_button = button("Mes variantes", "ghost", "layers")
         self.history_button.clicked.connect(lambda: self.pages.setCurrentIndex(2))
         self.history_button.setVisible(False)
         header.addWidget(self.history_button, 0, Qt.AlignmentFlag.AlignBottom)
         column.addLayout(header)
 
-        # 1 · Rushs
-        column.addWidget(_label("ÉTAPE 1 · TES RUSHS", "step"))
+        column.addWidget(label("ÉTAPE 1 · TES RUSHS", "step"))
         self.drop_zone = DropZone()
         self.drop_zone.filesDropped.connect(self.add_paths)
         self.drop_zone.browseRequested.connect(self.browse_rushes)
         column.addWidget(self.drop_zone)
-        self.rush_panel, rush_layout = _card(padding=14, spacing=8)
+        self.rush_panel, rush_layout = card(padding=14, spacing=8)
         rush_head = QHBoxLayout()
-        self.rush_count = _label("", "h3")
+        self.rush_count = label("", "h3")
         rush_head.addWidget(self.rush_count, 1)
-        add_more = _button("＋ Ajouter")
-        add_more.clicked.connect(self.browse_rushes)
-        rush_head.addWidget(add_more)
-        add_folder = _button("Dossier…")
-        add_folder.clicked.connect(self.browse_folder)
-        rush_head.addWidget(add_folder)
+        rush_head.addWidget(self._action("Ajouter", "plus", self.browse_rushes))
+        rush_head.addWidget(self._action("Dossier", "folder", self.browse_folder))
         rush_layout.addLayout(rush_head)
         self.rush_list = QListWidget()
         self.rush_list.setObjectName("thumbs")
@@ -340,63 +294,56 @@ class StudioPage(QWidget):
         self.rush_list.setFlow(QListWidget.Flow.LeftToRight)
         self.rush_list.setWrapping(False)
         self.rush_list.setIconSize(QSize(144, 81))
-        self.rush_list.setFixedHeight(142)
+        self.rush_list.setFixedHeight(148)
         self.rush_list.setMovement(QListWidget.Movement.Static)
         self.rush_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.rush_list.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)
         self.rush_list.setAcceptDrops(False)
         rush_layout.addWidget(self.rush_list)
-        hint = _label("Astuce : sélectionne des rushs et appuie sur Suppr pour les écarter du montage "
-                      "(les fichiers d'origine ne sont jamais modifiés).", "faint", wrap=True)
-        rush_layout.addWidget(hint)
+        rush_layout.addWidget(label("Sélectionne des rushs et appuie sur Suppr pour les écarter du montage "
+                                    "(les fichiers d'origine ne sont jamais modifiés).", "faint", wrap=True))
         self.rush_panel.setVisible(False)
         column.addWidget(self.rush_panel)
 
-        # 2 · Style
-        column.addWidget(_label("ÉTAPE 2 · LE STYLE", "step"))
-        grid = QGridLayout()
-        grid.setSpacing(12)
+        column.addWidget(label("ÉTAPE 2 · LE STYLE", "step"))
+        self.mode_grid = ReflowGrid(min_item_width=250, max_columns=3)
         self.mode_cards: dict[str, ModeCard] = {}
-        for index, mode in enumerate(MODES):
-            card = ModeCard(mode)
-            card.clicked.connect(lambda key=mode.key: self._select_mode(key))
-            grid.addWidget(card, index // 3, index % 3)
-            self.mode_cards[mode.key] = card
-        column.addLayout(grid)
+        for mode in MODES:
+            mode_card = ModeCard(mode)
+            mode_card.clicked.connect(lambda key=mode.key: self._select_mode(key))
+            self.mode_grid.add(mode_card)
+            self.mode_cards[mode.key] = mode_card
+        column.addWidget(self.mode_grid)
 
-        # 3 · Réglages
-        column.addWidget(_label("ÉTAPE 3 · LES RÉGLAGES (FACULTATIF)", "step"))
-        settings, settings_layout = _card()
-        grid = QGridLayout()
-        grid.setHorizontalSpacing(18)
-        grid.setVerticalSpacing(12)
-        grid.setColumnStretch(1, 1)
-        grid.setColumnStretch(3, 1)
-        self.aspect = Segmented((("▯  9:16", "9:16"), ("▭  16:9", "16:9"), ("□  1:1", "1:1")))
-        self.duration = QComboBox()
+        column.addWidget(label("ÉTAPE 3 · LES RÉGLAGES (FACULTATIF)", "step"))
+        settings, settings_layout = card()
+        self.aspect = Segmented((("9:16 Vertical", "9:16"), ("16:9 Horizontal", "16:9"), ("1:1 Carré", "1:1")))
+        self.duration = compact_combo(QComboBox())
         for text, value in DURATIONS:
             self.duration.addItem(text, value)
         self.music = QComboBox()
-        self.music.addItem("✦ Auto (selon le style)", "auto")
+        self.music.addItem("Auto (selon le style)", "auto")
         for track in music_catalog():
-            self.music.addItem(f"♪ {track.title} — {track.mood} · {track.bpm:g} BPM", track.key)
+            self.music.addItem(f"{track.title} — {track.mood} · {track.bpm:g} BPM", track.key)
         self.music.addItem("Sans musique", "none")
         self.music.addItem("Ma musique…", "custom")
         self.music.activated.connect(self._music_activated)
+        compact_combo(self.music)
         self.look = QComboBox()
-        self.look.addItem("✦ Auto (selon le style)", None)
+        self.look.addItem("Auto (selon le style)", None)
         for look in LOOKS:
             self.look.addItem(f"{look.title} — {look.description}", look.key)
+        compact_combo(self.look)
         self.fit = Segmented((("Remplir le cadre", "fill"), ("Fond flou", "fit_blur")))
         self.variant_count = Segmented((("1", 1), ("2", 2), ("3", 3)))
         self.variant_count.set_value(3)
         self.variant_count.changed.connect(lambda _value: self._update_cta())
-        self.quality = Segmented((("1080p", 1080), ("720p", 720), ("4K", 2160)))
+        self.quality = Segmented((("720p", 720), ("1080p", 1080), ("4K", 2160)))
         self.quality.set_value(1080)
-        self.preview_mode = Segmented((("⚡ Aperçus rapides", True), ("Qualité finale", False)))
+        self.preview_mode = Segmented((("Aperçus rapides", True, "zap"), ("Qualité finale", False, "check")))
         self.preview_mode.setToolTip("Aperçus rapides : les variantes sont montées en 540p (plusieurs fois plus vite) ; "
                                      "la variante choisie est refaite à la qualité d'export au moment d'exporter.")
-        # Titres facultatifs : désactivés par défaut, et vidés dès qu'on les décoche (rien ne reste d'une fois sur l'autre).
+        # Titres facultatifs : désactivés par défaut, et vidés dès qu'on les décoche.
         self.title_toggle = QCheckBox("Titre d'ouverture")
         self.title_edit = QLineEdit()
         self.title_edit.setPlaceholderText("Ex. : Week-end à Lisbonne")
@@ -408,57 +355,82 @@ class StudioPage(QWidget):
         self.outro_edit.setMaxLength(80)
         self.outro_edit.setEnabled(False)
         for toggle, edit in ((self.title_toggle, self.title_edit), (self.outro_toggle, self.outro_edit)):
+            toggle.setCursor(Qt.CursorShape.PointingHandCursor)
             toggle.toggled.connect(lambda checked, e=edit: (e.setEnabled(checked), None if checked else e.clear(),
                                                           e.setFocus() if checked else None))
         self.clean_noise = QCheckBox("Retirer les bruits : toux, claquements, souffle…")
+        self.clean_noise.setCursor(Qt.CursorShape.PointingHandCursor)
         self.clean_noise.setChecked(True)
         self.clean_noise.setToolTip("Vlog et Face cam : tout son fort qui n'est pas de la voix est coupé, partout. "
                                     "Le son d'origine des plans d'illustration (sans voix) est aussi coupé.")
-        rows = (
-            ("Format", self.aspect, "Durée", self.duration),
-            ("Musique", self.music, "Look", self.look),
-            ("Cadrage", self.fit, "Variantes", self.variant_count),
-            (self.title_toggle, self.title_edit, self.outro_toggle, self.outro_edit),
-            ("Son", self.clean_noise, None, None),
-            ("Aperçu", self.preview_mode, "Qualité d'export", self.quality),
-        )
-        for row, (label_a, widget_a, label_b, widget_b) in enumerate(rows):
-            grid.addWidget(label_a if isinstance(label_a, QWidget) else _label(label_a, "muted"), row, 0)
-            grid.addWidget(widget_a, row, 1)
-            if label_b:
-                grid.addWidget(label_b if isinstance(label_b, QWidget) else _label(label_b, "muted"), row, 2)
-                grid.addWidget(widget_b, row, 3)
-        settings_layout.addLayout(grid)
+        self.settings_form = FormGrid((
+            ("Format", self.aspect), ("Durée", self.duration),
+            ("Musique", self.music), ("Look", self.look),
+            ("Cadrage", self.fit), ("Variantes", self.variant_count),
+            (self.title_toggle, self.title_edit), (self.outro_toggle, self.outro_edit),
+            ("Aperçu", self.preview_mode), ("Qualité d'export", self.quality),
+            ("Son", self.clean_noise),
+        ))
+        settings_layout.addWidget(self.settings_form)
         column.addWidget(settings)
 
-        cta_row = QHBoxLayout()
-        self.cta_hint = _label("", "muted", wrap=True)
-        cta_row.addWidget(self.cta_hint, 1)
-        self.generate_button = _button("✦  Générer le montage", "cta")
+        self.cta_box = QBoxLayout(QBoxLayout.Direction.LeftToRight)
+        self.cta_box.setSpacing(16)
+        self.cta_hint = label("", "muted", wrap=True)
+        self.cta_box.addWidget(self.cta_hint, 1)
+        self.generate_button = button("Générer 3 variantes", "cta", "sparkles")
+        self.generate_button.setIconSize(QSize(20, 20))
         self.generate_button.clicked.connect(self.generate)
-        cta_row.addWidget(self.generate_button)
-        column.addLayout(cta_row)
+        self.cta_box.addWidget(self.generate_button)
+        column.addLayout(self.cta_box)
         column.addStretch()
-        return self._scroll(body)
+        self._create_body = body
+        return scroll_area(body)
+
+    def _action(self, text: str, icon: str, handler):
+        item = button(text, None, icon)
+        item.clicked.connect(handler)
+        return item
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        narrow = self.width() < 700
+        self.cta_box.setDirection(QBoxLayout.Direction.TopToBottom if narrow else QBoxLayout.Direction.LeftToRight)
+        self.generate_button.setSizePolicy(
+            QSizePolicy.Policy.Expanding if narrow else QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
+        if not hasattr(self, "results_body"):
+            return
+        stacked = self.width() < 1000
+        direction = QBoxLayout.Direction.TopToBottom if stacked else QBoxLayout.Direction.LeftToRight
+        if self.results_body.direction() != direction:
+            self.results_body.setDirection(direction)
+            self.side_widget.setMaximumWidth(16777215 if stacked else 520)
+            self.side_widget.setMinimumWidth(0 if stacked else 360)
+            self.video.setMinimumHeight(240 if stacked else 320)
+
+    # --- Progression ----------------------------------------------------------------------------
 
     def _build_progress(self) -> QWidget:
         page = QWidget()
         page.setObjectName("page")
         outer = QVBoxLayout(page)
+        outer.setContentsMargins(24, 24, 24, 24)
         outer.addStretch(2)
         row = QHBoxLayout()
         row.addStretch(1)
-        card, layout = _card(padding=32, spacing=14)
-        card.setMinimumWidth(520)
-        card.setMaximumWidth(640)
-        glyph = QLabel("✦")
-        glyph.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        glyph.setStyleSheet(f"font-size: 30pt; color: {theme.ACCENT};")
-        layout.addWidget(glyph)
-        self.progress_title = _label("Montage en cours…", "h2")
+        panel, layout = card(padding=32, spacing=14)
+        panel.setMinimumWidth(320)
+        panel.setMaximumWidth(640)
+        panel.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
+        glyph_row = QHBoxLayout()
+        glyph_row.addStretch()
+        glyph_row.addWidget(icon_badge("sparkles", theme.ACCENT, size=60, glyph=30, radius=30))
+        glyph_row.addStretch()
+        layout.addLayout(glyph_row)
+        self.progress_title = label("Montage en cours…", "h2", wrap=True)
         self.progress_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(self.progress_title)
-        self.progress_message = _label("Préparation", "muted", wrap=True)
+        self.progress_message = label("Préparation", "muted", wrap=True)
         self.progress_message.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(self.progress_message)
         self.progress_bar = QProgressBar()
@@ -466,68 +438,76 @@ class StudioPage(QWidget):
         self.progress_bar.setRange(0, 1000)
         self.progress_bar.setTextVisible(False)
         layout.addWidget(self.progress_bar)
-        self.progress_steps = _label("", "faint", wrap=True)
+        self.progress_steps = label("", "faint", wrap=True)
         self.progress_steps.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(self.progress_steps)
         cancel_row = QHBoxLayout()
         cancel_row.addStretch()
-        self.cancel_button = _button("Annuler", "danger")
+        self.cancel_button = button("Annuler", "danger", "x")
         self.cancel_button.clicked.connect(self.main.cancel_task)
         cancel_row.addWidget(self.cancel_button)
         cancel_row.addStretch()
         layout.addLayout(cancel_row)
-        row.addWidget(card, 2)
+        row.addWidget(panel, 100)
         row.addStretch(1)
         outer.addLayout(row)
         outer.addStretch(3)
         return page
 
+    # --- Résultats ------------------------------------------------------------------------------
+
     def _build_results(self) -> QWidget:
         page = QWidget()
         page.setObjectName("page")
-        layout = QVBoxLayout(page)
+        outer = QVBoxLayout(page)
+        outer.setContentsMargins(0, 0, 0, 0)
+        content = QWidget()
+        content.setObjectName("scrollBody")
+        layout = QVBoxLayout(content)
         layout.setContentsMargins(28, 22, 28, 22)
         layout.setSpacing(16)
         header = QHBoxLayout()
-        back = _button("←  Nouveau montage", "ghost")
+        back = button("Nouveau montage", "ghost", "arrow-left")
         back.clicked.connect(lambda: self.pages.setCurrentIndex(0))
         header.addWidget(back)
         header.addStretch()
         titles = QVBoxLayout()
-        self.results_title = _label("Tes variantes", "h1")
+        self.results_title = label("Tes variantes", "h1")
         self.results_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         titles.addWidget(self.results_title)
-        subtitle = _label("Choisis ta préférée, exporte-la ou peaufine-la dans l'éditeur.", "muted")
-        subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        titles.addWidget(subtitle)
-        header.addLayout(titles)
+        self.results_subtitle = label("Choisis ta préférée, exporte-la ou peaufine-la dans l'éditeur.", "muted",
+                                      wrap=True)
+        self.results_subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        titles.addWidget(self.results_subtitle)
+        header.addLayout(titles, 3)
         header.addStretch()
-        self.regenerate_button = _button("↻  Régénérer", "ghost")
+        self.regenerate_button = button("Régénérer", "ghost", "refresh")
         self.regenerate_button.clicked.connect(self.generate)
         header.addWidget(self.regenerate_button)
         layout.addLayout(header)
 
-        body = QHBoxLayout()
-        body.setSpacing(20)
+        self.results_body = QBoxLayout(QBoxLayout.Direction.LeftToRight)
+        self.results_body.setSpacing(20)
         player = QFrame()
         player.setObjectName("playerFrame")
         player_layout = QVBoxLayout(player)
         player_layout.setContentsMargins(10, 10, 10, 12)
         self.video = QVideoWidget()
-        self.video.setMinimumSize(360, 320)
+        self.video.setMinimumSize(280, 320)
         self.video.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         player_layout.addWidget(self.video, 1)
         transport = QHBoxLayout()
-        self.play_button = _button("▶", "ghost")
-        self.play_button.setFixedWidth(44)
+        self.play_button = button("", "ghost", "play")
+        self.play_button.setFixedSize(40, 36)
         self.play_button.clicked.connect(self.toggle_play)
         transport.addWidget(self.play_button)
         self.seek = QSlider(Qt.Orientation.Horizontal)
         transport.addWidget(self.seek, 1)
-        self.time_label = _label("0:00 / 0:00", "faint")
+        self.time_label = label("0:00 / 0:00", "faint")
         transport.addWidget(self.time_label)
         player_layout.addLayout(transport)
-        body.addWidget(player, 3)
+        player.setMinimumHeight(300)
+        self.results_body.addWidget(player, 3)
 
         side = QVBoxLayout()
         side.setSpacing(10)
@@ -535,24 +515,26 @@ class StudioPage(QWidget):
         self.variant_list.setSpacing(10)
         side.addLayout(self.variant_list)
         side.addStretch()
-        actions, actions_layout = _card(padding=14, spacing=10)
-        self.selection_label = _label("Aucune variante sélectionnée", "h3")
+        actions, actions_layout = card(padding=14, spacing=10)
+        self.selection_label = label("Aucune variante sélectionnée", "h3", wrap=True)
         actions_layout.addWidget(self.selection_label)
-        self.export_button = _button("⤓  Exporter la vidéo…", "primary")
+        self.export_button = button("Exporter la vidéo…", "primary", "download")
         self.export_button.clicked.connect(self.export_current)
         actions_layout.addWidget(self.export_button)
-        self.refine_button = _button("✎  Peaufiner dans l'éditeur")
+        self.refine_button = button("Peaufiner dans l'éditeur", None, "edit")
         self.refine_button.clicked.connect(self.refine_current)
         actions_layout.addWidget(self.refine_button)
-        actions_layout.addWidget(_label("Dans l'éditeur, tout reste modifiable : titres, musique, volume, SFX, "
-                                        "cadrage, masques, B-roll…", "faint", wrap=True))
+        actions_layout.addWidget(label("Dans l'éditeur, tout reste modifiable : titres, musique, volume, SFX, "
+                                       "cadrage, masques, B-roll…", "faint", wrap=True))
         side.addWidget(actions)
-        side_widget = QWidget()
-        side_widget.setLayout(side)
-        side_widget.setMinimumWidth(380)
-        side_widget.setMaximumWidth(520)
-        body.addWidget(side_widget, 2)
-        layout.addLayout(body, 1)
+        self.side_widget = QWidget()
+        self.side_widget.setObjectName("scrollBody")
+        self.side_widget.setLayout(side)
+        self.side_widget.setMinimumWidth(360)
+        self.side_widget.setMaximumWidth(520)
+        self.results_body.addWidget(self.side_widget, 2)
+        layout.addLayout(self.results_body, 1)
+        outer.addWidget(scroll_area(content))
 
         self.player = QMediaPlayer(self)
         self.audio = QAudioOutput(self)
@@ -568,8 +550,8 @@ class StudioPage(QWidget):
 
     def _select_mode(self, key: str):
         self.selected_mode = key
-        for mode_key, card in self.mode_cards.items():
-            card.set_selected(mode_key == key)
+        for mode_key, mode_card in self.mode_cards.items():
+            mode_card.set_selected(mode_key == key)
         self._update_cta()
 
     def _music_activated(self, index: int):
@@ -583,7 +565,7 @@ class StudioPage(QWidget):
         self._custom_music = path
         existing = self.music.findData(path)
         if existing < 0:
-            self.music.insertItem(self.music.count() - 1, f"♪ {Path(path).name} (tempo détecté)", path)
+            self.music.insertItem(self.music.count() - 1, f"{Path(path).name} (tempo détecté)", path)
             existing = self.music.findData(path)
         self.music.setCurrentIndex(existing)
 
@@ -596,7 +578,7 @@ class StudioPage(QWidget):
         mode = MODES_BY_KEY[self.selected_mode]
         count = self.variant_count.value() if hasattr(self, "variant_count") else 3
         if hasattr(self, "generate_button"):
-            self.generate_button.setText(f"✦  Générer {count} variante{'s' if count > 1 else ''}")
+            self.generate_button.setText(f"Générer {count} variante{'s' if count > 1 else ''}")
             busy = self.main.thread is not None
             self.generate_button.setEnabled(bool(rushes) and not busy)
             self.regenerate_button.setEnabled(bool(rushes) and not busy)
@@ -620,14 +602,14 @@ class StudioPage(QWidget):
             duration = f"{int((media.duration or 0) // 60)}:{int((media.duration or 0) % 60):02d}"
             item = QListWidgetItem(QIcon(_rounded_pixmap(thumb, QSize(144, 81), 8)),
                                    f"{media.name[:20]}{'…' if len(media.name) > 20 else ''}\n{duration}"
-                                   + ("  ⚠ manquant" if media.missing else ""))
+                                   + ("  · manquant" if media.missing else ""))
             item.setData(Qt.ItemDataRole.UserRole, media.id)
             item.setToolTip(str(media.path))
-            item.setSizeHint(QSize(160, 120))
+            item.setSizeHint(QSize(160, 124))
             self.rush_list.addItem(item)
         self.rush_panel.setVisible(bool(rushes))
         self._ensure_thumbnails(store, rushes)
-        self.drop_zone.setMinimumHeight(110 if rushes else 170)
+        self.drop_zone.setMinimumHeight(110 if rushes else 150)
         self.drop_zone.title.setText("Ajoute d'autres rushs" if rushes else "Glisse tes rushs ici")
         self.rush_count.setText(f"{len(rushes)} rush{'s' if len(rushes) > 1 else ''} prêt{'s' if len(rushes) > 1 else ''}")
         self.results = list_variants(store) if store else []
@@ -775,19 +757,19 @@ class StudioPage(QWidget):
             item = self.variant_list.takeAt(0)
             if item.widget():
                 item.widget().deleteLater()
-        self.cards: dict[str, VariantCard] = {}
+        self.cards = {}
         latest = self.results[0].created_at if self.results else None
         recent = [result for result in self.results if result.created_at == latest]
         recent.sort(key=lambda result: result.letter)
         for result in recent:
-            card = VariantCard(result)
-            card.clicked.connect(lambda r=result: self.select_variant(r))
-            self.variant_list.addWidget(card)
-            self.cards[result.key] = card
+            variant_card = VariantCard(result)
+            variant_card.clicked.connect(lambda r=result: self.select_variant(r))
+            self.variant_list.addWidget(variant_card)
+            self.cards[result.key] = variant_card
         older = [result for result in self.results if result.created_at != latest]
         if older:
-            self.variant_list.addWidget(_label(f"{len(older)} variante(s) plus ancienne(s) disponible(s) dans "
-                                               "l'éditeur (dossier « montages » du projet).", "faint", wrap=True))
+            self.variant_list.addWidget(label(f"{len(older)} variante(s) plus ancienne(s) disponible(s) dans "
+                                              "l'éditeur (dossier « montages » du projet).", "faint", wrap=True))
         if recent:
             target = next((r for r in recent if r.key == select), recent[0])
             self.select_variant(target, autoplay=select is not None)
@@ -798,8 +780,8 @@ class StudioPage(QWidget):
 
     def select_variant(self, result: VariantResult, autoplay: bool = True):
         self.current = result
-        for key, card in self.cards.items():
-            card.set_selected(key == result.key)
+        for key, variant_card in self.cards.items():
+            variant_card.set_selected(key == result.key)
         mode = MODES_BY_KEY.get(result.mode)
         self.selection_label.setText(f"Variante {result.letter} · {result.name}"
                                      + (f" — {mode.title}" if mode else ""))
@@ -818,7 +800,7 @@ class StudioPage(QWidget):
             self.player.play()
 
     def _playback_state(self, state):
-        self.play_button.setText("❚❚" if state == QMediaPlayer.PlaybackState.PlayingState else "▶")
+        apply_icon(self.play_button, "pause" if state == QMediaPlayer.PlaybackState.PlayingState else "play", "ghost")
 
     def _position_changed(self, position: int):
         self.seek.setValue(position)

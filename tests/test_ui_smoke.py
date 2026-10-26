@@ -146,3 +146,76 @@ def test_titles_are_opt_in_and_do_not_persist(window):
     studio.title_toggle.setChecked(False)
     assert studio.title_edit.text() == "" and studio.build_request().title == ""
     assert studio.build_request().clean_noise is True
+
+
+@pytest.mark.parametrize("size", [(960, 600), (1100, 720), (1480, 940), (1920, 1080)])
+def test_every_page_fits_without_horizontal_scrolling(window, size, tmp_path):
+    from PySide6.QtWidgets import QAbstractScrollArea
+
+    app, main, _errors = window
+    store = ProjectStore.create(tmp_path / "project")
+    main._load_project(store)
+    main.resize(*size)
+    main.show()
+    app.processEvents()
+
+    def overflowing(root):
+        return [area.objectName() or type(area).__name__ for area in root.findChildren(QAbstractScrollArea)
+                if area.isVisible() and area.horizontalScrollBar().maximum() > 0
+                and area.objectName() in {"pageScroll", ""} and type(area).__name__ == "QScrollArea"]
+
+    for index in range(3):
+        main.pages.setCurrentIndex(index)
+        if index == 0:
+            for sub in (0, 2):
+                main.studio.pages.setCurrentIndex(sub)
+                app.processEvents()
+                assert overflowing(main.studio) == [], (size, "studio", sub)
+        elif index == 1:
+            for tab in range(main.editor_tabs.count()):
+                main.editor_tabs.setCurrentIndex(tab)
+                app.processEvents()
+                assert overflowing(main.editor_tabs) == [], (size, "editor", main.editor_tabs.tabText(tab))
+        else:
+            app.processEvents()
+            assert overflowing(main.library_page) == [], (size, "library")
+    compact = size[0] < 1180
+    assert main.sidebar_frame.width() == (68 if compact else 232)
+
+
+def test_layouts_reflow_with_the_window_width(window):
+    app, main, _errors = window
+    main.studio.pages.setCurrentIndex(0)
+    main.pages.setCurrentIndex(0)
+    columns = {}
+    for width in (1500, 1000, 760):
+        main.resize(width, 800)
+        app.processEvents()
+        columns[width] = (main.studio.mode_grid.columns, main.studio.settings_form.two_columns)
+    assert columns[1500] == (3, True)
+    assert columns[1000][0] in (2, 3) and columns[760][0] <= 2 and columns[760][1] is False
+
+
+def test_legacy_buttons_get_icons_and_variants_automatically(window):
+    app, main, _errors = window
+    main.pages.setCurrentIndex(1)
+    main.editor_tabs.setCurrentIndex(0)
+    app.processEvents()
+    assert not main.import_button.icon().isNull()
+    assert main.framing_delete_button.property("variant") == "danger"
+    assert main.export_button.property("variant") == "primary"
+    for current in range(main.editor_tabs.count()):
+        main.editor_tabs.setCurrentIndex(current)
+        app.processEvents()
+    assert not main.broll_delete_button.icon().isNull()
+
+
+def test_all_icons_render_and_qt_texts_are_french(window):
+    from PySide6.QtWidgets import QDialogButtonBox
+
+    from cutweave.ui import icons
+
+    for name in icons.available():
+        assert not icons.pixmap(name).isNull(), name
+    box = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
+    assert {button.text().replace("&", "") for button in box.buttons()} == {"Enregistrer", "Annuler"}

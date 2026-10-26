@@ -5,6 +5,7 @@ from __future__ import annotations
 import shutil
 import subprocess
 
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QCheckBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout, QGridLayout, QGroupBox, QHBoxLayout, QLabel,
     QLineEdit, QMessageBox, QPushButton, QTableWidget, QTableWidgetItem, QTextEdit, QVBoxLayout, QWidget,
@@ -67,10 +68,21 @@ class SettingsDialog(QDialog):
     def __init__(self, settings: AppSettings, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Paramètres de CUTWEAVE")
-        self.resize(640, 420)
+        self.resize(680, 520)
+        self.setMinimumWidth(520)
         self.settings = settings
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(24, 22, 24, 20)
+        layout.setSpacing(14)
+        heading = QLabel("Paramètres")
+        heading.setProperty("role", "h2")
+        layout.addWidget(heading)
+        intro = QLabel("Chemins des outils et dossiers de travail. Tout reste sur ta machine.")
+        intro.setProperty("role", "muted")
+        layout.addWidget(intro)
         form = QFormLayout()
+        form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        form.setVerticalSpacing(12)
         self.ffmpeg = self._path_row(form, "FFmpeg", settings.ffmpeg_path, file=True)
         self.ffprobe = self._path_row(form, "FFprobe", settings.ffprobe_path, file=True)
         self.log_dir = self._path_row(form, "Dossier des journaux", settings.log_dir, file=False)
@@ -79,6 +91,7 @@ class SettingsDialog(QDialog):
         hint = QLabel("Laissez vide pour utiliser FFmpeg/FFprobe du PATH et le dossier de journaux par défaut "
                       f"({settings.resolved_log_dir() if not settings.log_dir else settings.log_dir}).")
         hint.setWordWrap(True)
+        hint.setProperty("role", "faint")
         layout.addWidget(hint)
         check = QPushButton("Vérifier FFmpeg et FFprobe")
         check.clicked.connect(self._check_tools)
@@ -131,12 +144,22 @@ class SettingsDialog(QDialog):
         self.accept()
 
 
+TASK_STATUS_LABELS = {"succeeded": "Terminée", "failed": "Échec", "cancelled": "Annulée", "running": "En cours"}
+KIND_LABELS = {"pipeline_export": "Export complet", "pipeline_step_visual": "Étape 1 — Visuel",
+               "pipeline_step_composition": "Étape 2 — Composition", "pipeline_step_finishing": "Étape 3 — Finition"}
+
+
 class TaskHistoryDialog(QDialog):
     def __init__(self, store, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Historique des tâches du projet")
-        self.resize(900, 420)
+        self.resize(960, 480)
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(24, 22, 24, 20)
+        layout.setSpacing(14)
+        heading = QLabel("Historique des tâches")
+        heading.setProperty("role", "h2")
+        layout.addWidget(heading)
         table = QTableWidget(0, 6)
         table.setHorizontalHeaderLabels(["#", "Type", "Statut", "Début", "Sortie", "Erreur"])
         table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
@@ -144,7 +167,9 @@ class TaskHistoryDialog(QDialog):
         tasks = store.list_tasks()
         table.setRowCount(len(tasks))
         for row, task in enumerate(tasks):
-            values = [str(task["id"]), task["kind"], task["status"], (task["started_at"] or "")[:19].replace("T", " "),
+            values = [str(task["id"]), KIND_LABELS.get(task["kind"], task["kind"]),
+                      TASK_STATUS_LABELS.get(task["status"], task["status"]),
+                      (task["started_at"] or "")[:19].replace("T", " "),
                       task["output_path"] or "", (task["error"] or "").splitlines()[0] if task["error"] else ""]
             for column, value in enumerate(values):
                 item = QTableWidgetItem(value)
@@ -197,8 +222,8 @@ class PipelinePanel(QWidget):
             button.clicked.connect(lambda _checked=False, name=stage: self._run_stage(name))
             actions.addWidget(button, 1, column)
             self.stage_buttons[stage] = button
-        self.force_check = QCheckBox("Forcer le recalcul des étapes (le cache de rendu reste utilisé ; "
-                                     "Projet > Purger le cache pour réencoder)")
+        self.force_check = QCheckBox("Forcer le recalcul des étapes")
+        self.force_check.setToolTip("Le cache de rendu reste utilisé ; Projet > Purger le cache pour réencoder.")
         actions.addWidget(self.force_check, 2, 0, 1, 3)
         layout.addLayout(actions)
         note = QLabel("Le pipeline complet compile les instructions des trois étapes puis encode en une seule passe. "

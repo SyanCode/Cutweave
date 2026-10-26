@@ -45,7 +45,9 @@ QFrame#sidebar {{ background: #0a0b0e; border-right: 1px solid #1d2028; }}
 QFrame#bottomBar {{ background: #0a0b0e; border-top: 1px solid #1d2028; }}
 QFrame#playerFrame {{ background: #050608; border: 1px solid {BORDER}; border-radius: 14px; }}
 
-QPushButton {{ background: {SURFACE_2}; border: 1px solid {BORDER}; padding: 7px 14px; border-radius: 9px; }}
+QPushButton {{ background: {SURFACE_2}; border: 1px solid {BORDER}; padding: 7px 14px; border-radius: 9px; min-height: 18px; }}
+QPushButton:focus {{ border-color: {ACCENT}; }}
+QPushButton[variant="primary"]:focus, QPushButton[variant="cta"]:focus {{ border: 0; }}
 QPushButton:hover {{ background: {SURFACE_3}; border-color: {BORDER_STRONG}; }}
 QPushButton:pressed {{ background: #2d3240; }}
 QPushButton:disabled {{ color: {FAINT}; background: {SURFACE}; border-color: {SURFACE_2}; }}
@@ -68,12 +70,24 @@ QComboBox, QSpinBox, QDoubleSpinBox, QLineEdit {{ background: {SURFACE_2}; borde
     border-radius: 8px; selection-background-color: {ACCENT}; }}
 QComboBox:hover, QSpinBox:hover, QDoubleSpinBox:hover, QLineEdit:hover {{ border-color: {BORDER_STRONG}; }}
 QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus, QLineEdit:focus {{ border-color: {ACCENT}; }}
-QComboBox::drop-down {{ border: 0; width: 24px; }}
+QComboBox::drop-down {{ border: 0; width: 28px; subcontrol-origin: padding; subcontrol-position: center right; }}
+QComboBox::down-arrow {{ image: url(@ICONS@/chevron-down.svg); width: 14px; height: 14px; }}
+QSpinBox, QDoubleSpinBox {{ padding-right: 24px; }}
+QSpinBox::up-button, QDoubleSpinBox::up-button {{ subcontrol-origin: border; subcontrol-position: top right; width: 22px;
+    border: 0; border-top-right-radius: 8px; background: transparent; }}
+QSpinBox::down-button, QDoubleSpinBox::down-button {{ subcontrol-origin: border; subcontrol-position: bottom right; width: 22px;
+    border: 0; border-bottom-right-radius: 8px; background: transparent; }}
+QSpinBox::up-button:hover, QDoubleSpinBox::up-button:hover, QSpinBox::down-button:hover, QDoubleSpinBox::down-button:hover {{
+    background: {SURFACE_3}; }}
+QSpinBox::up-arrow, QDoubleSpinBox::up-arrow {{ image: url(@ICONS@/chevron-up.svg); width: 10px; height: 10px; }}
+QSpinBox::down-arrow, QDoubleSpinBox::down-arrow {{ image: url(@ICONS@/chevron-down.svg); width: 10px; height: 10px; }}
 QComboBox QAbstractItemView {{ background: {SURFACE_2}; border: 1px solid {BORDER_STRONG}; selection-background-color: #2a2347;
     outline: 0; padding: 4px; }}
 QCheckBox {{ spacing: 8px; }}
 QCheckBox::indicator {{ width: 16px; height: 16px; border-radius: 5px; border: 1px solid {BORDER_STRONG}; background: {SURFACE_2}; }}
-QCheckBox::indicator:checked {{ background: {ACCENT}; border-color: {ACCENT}; }}
+QCheckBox::indicator:checked {{ background: {ACCENT}; border-color: {ACCENT}; image: url(@ICONS@/check.svg); }}
+QCheckBox::indicator:hover {{ border-color: {ACCENT}; }}
+QCheckBox:disabled {{ color: {FAINT}; }}
 
 QTableWidget, QTextEdit, QListWidget {{ background: {SURFACE}; border: 1px solid {BORDER}; border-radius: 10px;
     gridline-color: {BORDER}; alternate-background-color: {SURFACE_2}; }}
@@ -120,12 +134,64 @@ QMenu {{ background: {SURFACE_2}; border: 1px solid {BORDER_STRONG}; padding: 4p
 QMenu::item {{ padding: 6px 18px; border-radius: 6px; }}
 QMenu::item:selected {{ background: #2a2347; }}
 QStatusBar {{ background: #0a0b0e; color: {MUTED}; }}
+QStatusBar::item {{ border: 0; }}
+QTabBar QToolButton {{ background: {SURFACE_2}; border: 0; border-radius: 6px; margin: 2px; }}
+QTabBar QToolButton:hover {{ background: {SURFACE_3}; }}
+QTabBar QToolButton::left-arrow {{ image: url(@ICONS@/chevron-left.svg); width: 12px; height: 12px; }}
+QTabBar QToolButton::right-arrow {{ image: url(@ICONS@/chevron-right.svg); width: 12px; height: 12px; }}
+QToolButton {{ background: transparent; border: 0; border-radius: 8px; padding: 6px; }}
+QToolButton:hover {{ background: {SURFACE_2}; }}
+QDialog {{ background: {BG}; }}
+QMessageBox {{ background: {BG}; }}
+QMessageBox QLabel {{ color: {TEXT}; min-width: 280px; }}
+QDialogButtonBox QPushButton, QMessageBox QPushButton {{ min-width: 92px; }}
+QAbstractScrollArea::corner {{ background: transparent; }}
+QTableWidget {{ selection-background-color: #2a2347; outline: 0; }}
+QTableWidget::item {{ padding: 4px 6px; }}
+QLabel[role="empty"] {{ color: {FAINT}; font-size: 10pt; }}
 QToolTip {{ background: {SURFACE_3}; color: {TEXT}; border: 1px solid {BORDER_STRONG}; padding: 5px; border-radius: 6px; }}
 """
 
 
+def _write_ui_assets() -> str:
+    """Flèches et coche utilisées par la feuille de style (fichiers SVG locaux, créés une fois)."""
+    from pathlib import Path
+
+    from cutweave.core.settings import config_dir
+    from cutweave.ui import icons
+
+    folder = Path(config_dir()) / "ui"
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+        for name, glyph, color in (("chevron-down", "chevron-down", MUTED), ("chevron-up", "chevron-up", MUTED),
+                                   ("chevron-left", "chevron-left", TEXT), ("chevron-right", "chevron-right", TEXT),
+                                   ("check", "check", "#ffffff")):
+            target = folder / f"{name}.svg"
+            target.write_text(icons.svg_markup(glyph, color), encoding="utf-8")
+    except OSError:
+        pass
+    return folder.as_posix()
+
+
+def _install_translations(app: QApplication) -> None:
+    """Textes standards de Qt (boutons des boîtes de dialogue, sélecteurs de fichiers) en français."""
+    if getattr(app, "_cw_translators", None) is not None:
+        return
+    from PySide6.QtCore import QLibraryInfo, QLocale, QTranslator
+
+    app._cw_translators = []
+    folder = QLibraryInfo.path(QLibraryInfo.LibraryPath.TranslationsPath)
+    QLocale.setDefault(QLocale(QLocale.Language.French, QLocale.Country.France))
+    for name in ("qtbase_fr", "qt_fr"):
+        translator = QTranslator(app)
+        if translator.load(name, folder):
+            app.installTranslator(translator)
+            app._cw_translators.append(translator)
+
+
 def apply_theme(app: QApplication) -> None:
     app.setStyle("Fusion")
+    _install_translations(app)
     palette = QPalette()
     for role, color in (
         (QPalette.ColorRole.Window, BG), (QPalette.ColorRole.Base, SURFACE), (QPalette.ColorRole.AlternateBase, SURFACE_2),
@@ -139,7 +205,11 @@ def apply_theme(app: QApplication) -> None:
     font = QFont("Segoe UI", 10)
     font.setStyleStrategy(QFont.StyleStrategy.PreferAntialias)
     app.setFont(font)
-    app.setStyleSheet(STYLESHEET)
+    app.setStyleSheet(STYLESHEET.replace("@ICONS@", _write_ui_assets()))
+    from cutweave.ui.widgets import install_button_styler
+
+    if getattr(app, "_cw_button_styler", None) is None:
+        install_button_styler(app)
 
 
 def set_role(widget: QWidget, name: str, value: str) -> QWidget:

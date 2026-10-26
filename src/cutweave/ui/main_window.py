@@ -9,7 +9,7 @@ import uuid
 from dataclasses import replace
 from pathlib import Path
 
-from PySide6.QtCore import QObject, QThread, Qt, Signal, QUrl, QRect, QPoint, QSize, QTimer
+from PySide6.QtCore import QObject, QThread, QSettings, Qt, Signal, QUrl, QRect, QPoint, QSize, QTimer
 from PySide6.QtGui import QAction, QDesktopServices, QIcon, QImage, QPixmap
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtMultimediaWidgets import QVideoWidget
@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (
     QMessageBox, QProgressBar, QPushButton, QSpinBox, QDoubleSpinBox, QInputDialog,
     QSlider, QSplitter, QStatusBar, QTableWidget, QTableWidgetItem, QTabWidget, QTextEdit, QRubberBand,
     QVBoxLayout, QWidget, QListWidget, QListWidgetItem, QLineEdit, QCheckBox, QApplication, QFrame,
-    QStackedWidget,
+    QStackedWidget, QHeaderView, QSizePolicy,
 )
 
 from cutweave.media.files import collect_video_files
@@ -29,7 +29,7 @@ from cutweave.media.render import (
 )
 from cutweave.core.cache import StageCache
 from cutweave.core.pipeline import STAGE_LABELS, PipelineInputError, ProgressEvent, collect_job, run_job
-from cutweave.core.settings import AppSettings, configure_logging
+from cutweave.core.settings import AppSettings, config_dir, configure_logging
 from cutweave.media.probe import ffprobe_path
 from cutweave.stages.composition.captions import (
     CaptionCue, CaptionParseError, load_caption_file, merge_cues, parse_timestamp, split_cue,
@@ -45,7 +45,9 @@ from cutweave.stages.finishing.caption_presets import (
 from cutweave.autoedit.service import default_project_dir, ensure_final, is_draft_montage
 from cutweave.ui.caption_preset_dialog import CaptionPresetDialog
 from cutweave.ui.library_page import LibraryPage
-from cutweave.ui.studio import StudioPage
+from cutweave.ui.studio import StudioPage, scroll_area
+from cutweave.ui.widgets import apply_icon, button as make_button, tidy_page
+from cutweave.ui import icons, theme
 from cutweave.ui.theme import apply_theme
 from cutweave.ui.dialogs import PipelinePanel, SettingsDialog, TaskHistoryDialog
 from cutweave.ui.rules_panel import RulesPanel
@@ -180,8 +182,11 @@ class MainWindow(QMainWindow):
         self._log_handler = QtLogHandler(self.log_bridge)
         logging.getLogger("cutweave").addHandler(self._log_handler)
         self.setWindowTitle("CUTWEAVE — Montage vidéo automatique")
-        self.resize(1480, 940)
-        self.setMinimumSize(1100, 720)
+        self.setMinimumSize(900, 600)
+        self._geometry_store = QSettings(str(config_dir() / "window.ini"), QSettings.Format.IniFormat)
+        saved = self._geometry_store.value("geometry")
+        if not (saved and self.restoreGeometry(saved)):
+            self.resize(1480, 940)
         if QApplication.instance() is not None:
             apply_theme(QApplication.instance())
         self._build_ui()
@@ -211,15 +216,22 @@ class MainWindow(QMainWindow):
         content.setObjectName("page")
         self.pages.addWidget(content)
         layout = QVBoxLayout(content)
-        layout.setContentsMargins(20, 14, 20, 10)
+        layout.setContentsMargins(20, 16, 20, 10)
+        layout.setSpacing(12)
         header = QHBoxLayout()
+        title_box = QVBoxLayout()
+        title_box.setSpacing(0)
         self.project_label = QLabel("Aucun projet ouvert")
         self.project_label.setProperty("role", "h2")
-        header.addWidget(self.project_label, 1)
-        self.import_button = QPushButton("Importer des médias…")
+        title_box.addWidget(self.project_label)
+        subtitle = QLabel("Éditeur : peaufine chaque réglage, tout est enregistré automatiquement.")
+        subtitle.setProperty("role", "faint")
+        title_box.addWidget(subtitle)
+        header.addLayout(title_box, 1)
+        self.import_button = make_button("Importer des médias…", None, "upload")
         self.import_button.clicked.connect(self.import_media)
         header.addWidget(self.import_button)
-        self.import_folder_button = QPushButton("Importer un dossier…")
+        self.import_folder_button = make_button("Importer un dossier…", None, "folder")
         self.import_folder_button.clicked.connect(self.import_folder)
         header.addWidget(self.import_folder_button)
         layout.addLayout(header)
@@ -227,16 +239,39 @@ class MainWindow(QMainWindow):
         splitter = QSplitter(Qt.Orientation.Horizontal)
         left = QWidget()
         left_layout = QVBoxLayout(left)
-        left_layout.addWidget(QLabel("Médias du projet"))
+        left_layout.setContentsMargins(0, 0, 8, 0)
+        left_layout.setSpacing(8)
+        preview_layout = QVBoxLayout()
+        preview_layout.setSpacing(8)
+        left_layout.addLayout(preview_layout)
+        media_head = QHBoxLayout()
+        media_title = QLabel("Médias du projet")
+        media_title.setProperty("role", "h3")
+        media_head.addWidget(media_title, 1)
+        left_layout.addLayout(media_head)
         self.table = QTableWidget(0, 5)
         self.table.setHorizontalHeaderLabels(["Nom", "Durée", "Résolution", "Images/s", "Audio"])
-        self.table.horizontalHeader().setStretchLastSection(True)
+        header_view = self.table.horizontalHeader()
+        header_view.setStretchLastSection(False)
+        header_view.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        for column in range(1, 5):
+            header_view.setSectionResizeMode(column, QHeaderView.ResizeMode.ResizeToContents)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.table.setColumnHidden(3, True)   # images/s et audio : dans l'infobulle, pour garder la liste lisible
+        self.table.setColumnHidden(4, True)
         self.table.itemSelectionChanged.connect(self._selection_changed)
+        self.media_empty = QLabel("Aucun média. Importe des vidéos ou dépose-les dans le Studio.")
+        self.media_empty.setProperty("role", "empty")
+        self.media_empty.setWordWrap(True)
+        self.media_empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        left_layout.addWidget(self.media_empty)
         left_layout.addWidget(self.table, 1)
+        captions_page = QWidget()
+        captions_layout = QVBoxLayout(captions_page)
+        captions_layout.addWidget(QLabel("Textes affichés à l'écran : édite les temps et le texte directement dans le tableau."))
         caption_header = QHBoxLayout()
-        caption_header.addWidget(QLabel("Captions"), 1)
+        caption_header.addStretch(1)
         self.caption_import_button = QPushButton("Importer…")
         self.caption_import_button.clicked.connect(self.import_captions)
         caption_header.addWidget(self.caption_import_button)
@@ -256,8 +291,8 @@ class MainWindow(QMainWindow):
         self.caption_delete_button = QPushButton("Supprimer")
         self.caption_delete_button.clicked.connect(self.delete_caption)
         caption_actions.addWidget(self.caption_delete_button)
-        left_layout.addLayout(caption_header)
-        left_layout.addLayout(caption_actions)
+        captions_layout.addLayout(caption_header)
+        captions_layout.addLayout(caption_actions)
         self.caption_table = QTableWidget(0, 3)
         self.caption_table.setHorizontalHeaderLabels(["Début", "Fin", "Texte"])
         self.caption_table.horizontalHeader().setStretchLastSection(True)
@@ -265,34 +300,44 @@ class MainWindow(QMainWindow):
         self.caption_table.setSelectionMode(QTableWidget.SelectionMode.ExtendedSelection)
         self.caption_table.cellChanged.connect(self._caption_cell_changed)
         self.caption_table.itemSelectionChanged.connect(self._caption_selection_changed)
-        left_layout.addWidget(self.caption_table, 1)
+        captions_layout.addWidget(self.caption_table, 1)
         splitter.addWidget(left)
 
         right = QWidget()
         right_layout = QVBoxLayout(right)
-        right_layout.addWidget(QLabel("Aperçu"))
+        right_layout.setContentsMargins(8, 0, 0, 0)
+        player_frame = QFrame()
+        player_frame.setObjectName("playerFrame")
+        player_inner = QVBoxLayout(player_frame)
+        player_inner.setContentsMargins(8, 8, 8, 8)
+        player_inner.setSpacing(6)
         self.video_widget = QVideoWidget()
-        self.video_widget.setMinimumSize(400, 260)
+        self.video_widget.setMinimumSize(240, 170)
+        self.video_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.video_widget.setStyleSheet("background: #050608;")
-        right_layout.addWidget(self.video_widget, 1)
+        player_inner.addWidget(self.video_widget, 1)
+        preview_layout.addWidget(player_frame, 1)
         player_row = QHBoxLayout()
         self.player = QMediaPlayer(self)
         self.audio_output = QAudioOutput(self)
         self.player.setAudioOutput(self.audio_output)
         self.player.setVideoOutput(self.video_widget)
-        self.play_button = QPushButton("Lecture")
+        self.play_button = make_button("", "ghost", "play")
+        self.play_button.setFixedSize(40, 34)
         self.play_button.clicked.connect(self._toggle_play)
         player_row.addWidget(self.play_button)
         self.player_status = QLabel("Sélectionnez une vidéo")
+        self.player_status.setProperty("role", "muted")
+        self.player_status.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         player_row.addWidget(self.player_status, 1)
-        right_layout.addLayout(player_row)
+        player_inner.addLayout(player_row)
         self.seek_slider = QSlider(Qt.Orientation.Horizontal)
         self.seek_slider.setRange(0, 0)
         self.seek_slider.sliderMoved.connect(self.player.setPosition)
         self.player.positionChanged.connect(self.seek_slider.setValue)
         self.player.durationChanged.connect(lambda duration: self.seek_slider.setRange(0, duration))
         self.player.errorOccurred.connect(self._playback_error)
-        right_layout.addWidget(self.seek_slider)
+        player_inner.addWidget(self.seek_slider)
 
         self.editor_tabs = editor_tabs = QTabWidget()
         visual_page = QWidget()
@@ -338,7 +383,7 @@ class MainWindow(QMainWindow):
         self.sharpening_reset_button = QPushButton("Réinitialiser la netteté")
         self.sharpening_reset_button.clicked.connect(self.reset_sharpening)
         sharpening_actions.addWidget(self.sharpening_reset_button)
-        self.sharpening_compare_button = QPushButton("Comparer avant / après au curseur")
+        self.sharpening_compare_button = QPushButton("Comparer avant / après")
         self.sharpening_compare_button.clicked.connect(self.compare_sharpening)
         sharpening_actions.addWidget(self.sharpening_compare_button)
         visual_layout.addLayout(sharpening_actions)
@@ -355,7 +400,7 @@ class MainWindow(QMainWindow):
         self.framing_delete_button = QPushButton("Supprimer")
         self.framing_delete_button.clicked.connect(self.delete_framing_keyframes)
         framing_actions.addWidget(self.framing_delete_button)
-        self.framing_import_track_button = QPushButton("Importer une trajectoire de tracking…")
+        self.framing_import_track_button = QPushButton("Importer un suivi…")
         self.framing_import_track_button.clicked.connect(self.import_tracking_as_framing)
         framing_actions.addWidget(self.framing_import_track_button)
         visual_layout.addLayout(framing_actions)
@@ -398,6 +443,7 @@ class MainWindow(QMainWindow):
         visual_layout.addWidget(QLabel("Suivi classique d'une zone choisie manuellement, sans détection automatique."))
         visual_layout.addStretch(1)
         editor_tabs.addTab(visual_page, "Visuel")
+        editor_tabs.addTab(captions_page, "Captions")
 
         preset_page = QWidget()
         preset_layout = QVBoxLayout(preset_page)
@@ -429,7 +475,7 @@ class MainWindow(QMainWindow):
         self.finishing_stage_button.clicked.connect(lambda: self.export_selected(target_stage="finishing"))
         preset_layout.addWidget(self.finishing_stage_button)
         preset_layout.addStretch(1)
-        editor_tabs.addTab(preset_page, "Presets captions")
+        editor_tabs.addTab(preset_page, "Style captions")
 
         mask_page = QWidget()
         mask_layout = QVBoxLayout(mask_page)
@@ -523,8 +569,10 @@ class MainWindow(QMainWindow):
         self.music_volume = QDoubleSpinBox(); self.music_volume.setRange(0, 4); self.music_volume.setSingleStep(0.05); self.music_volume.setValue(0.25)
         self.music_fade_in = QSpinBox(); self.music_fade_in.setRange(0, 86_400_000); self.music_fade_in.setSuffix(" ms")
         self.music_fade_out = QSpinBox(); self.music_fade_out.setRange(0, 86_400_000); self.music_fade_out.setSuffix(" ms")
-        self.music_loop = QCheckBox("Répéter la plage source jusqu'à la fin de la vidéo")
-        self.keep_source_audio = QCheckBox("Conserver et mixer l'audio du rush")
+        self.music_loop = QCheckBox("Répéter jusqu'à la fin")
+        self.music_loop.setToolTip("Répète la plage source jusqu'à la fin de la vidéo.")
+        self.keep_source_audio = QCheckBox("Mixer l'audio du rush")
+        self.keep_source_audio.setToolTip("Conserve l'audio d'origine du rush et le mixe avec la musique.")
         self.music_ducking = QLineEdit()
         self.music_ducking.setPlaceholderText("ex. 1200,3400,0.2,120; 8000,9500,0.15,80")
         self.music_ducking.setToolTip("Intervalles manuels en ms : début,fin,niveau,fondu ; séparés par des points-virgules.")
@@ -590,9 +638,28 @@ class MainWindow(QMainWindow):
             lambda: self.store, self._selected_media, self._run_pipeline_from_panel, self._append_log,
         )
         editor_tabs.addTab(self.pipeline_panel, "Pipeline")
+        # Chaque onglet défile : rien n'est écrasé ni coupé quand la fenêtre est petite.
+        pages = [(editor_tabs.widget(i), editor_tabs.tabText(i)) for i in range(editor_tabs.count())]
+        editor_tabs.clear()
+        for page, text in pages:
+            if page.layout() is not None:
+                page.layout().setContentsMargins(14, 14, 14, 14)
+            tidy_page(page)
+            editor_tabs.addTab(scroll_area(page), text)
+        editor_tabs.setUsesScrollButtons(True)
+        editor_tabs.setElideMode(Qt.TextElideMode.ElideNone)
+        for form_layout in content.findChildren(QFormLayout):
+            form_layout.setLabelAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+            form_layout.setVerticalSpacing(10)
+            form_layout.setHorizontalSpacing(16)
         right_layout.addWidget(editor_tabs, 1)
         splitter.addWidget(right)
-        splitter.setSizes([560, 620])
+        splitter.setChildrenCollapsible(False)
+        splitter.setStretchFactor(0, 4)
+        splitter.setStretchFactor(1, 6)
+        splitter.setSizes([380, 680])
+        left.setMinimumWidth(280)
+        right.setMinimumWidth(440)
         layout.addWidget(splitter, 1)
         self.library_page = LibraryPage(self)
         self.pages.addWidget(self.library_page)
@@ -609,20 +676,18 @@ class MainWindow(QMainWindow):
         progress_row.setContentsMargins(16, 7, 12, 7)
         self.stage_label = QLabel("Prêt")
         self.stage_label.setProperty("role", "muted")
-        self.stage_label.setMinimumWidth(300)
-        progress_row.addWidget(self.stage_label)
+        self.stage_label.setMinimumWidth(80)
+        self.stage_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        progress_row.addWidget(self.stage_label, 2)
         self.progress = QProgressBar()
         self.progress.setRange(0, 100)
         self.progress.setValue(0)
         self.progress.setTextVisible(False)
-        progress_row.addWidget(self.progress, 1)
-        self.cancel_button = QPushButton("Annuler")
-        self.cancel_button.setProperty("variant", "danger")
+        progress_row.addWidget(self.progress, 3)
+        self.cancel_button = make_button("Annuler", "danger", "x")
         self.cancel_button.clicked.connect(self.cancel_task)
         progress_row.addWidget(self.cancel_button)
-        self.log_toggle = QPushButton("Journal")
-        self.log_toggle.setProperty("variant", "ghost")
-        self.log_toggle.setCheckable(True)
+        self.log_toggle = make_button("Journal", "ghost", "list", checkable=True)
         self.log_toggle.toggled.connect(self.log_view.setVisible)
         progress_row.addWidget(self.log_toggle)
         main_column.addWidget(bottom)
@@ -634,48 +699,63 @@ class MainWindow(QMainWindow):
     def _build_sidebar(self):
         tabs = {self.editor_tabs.tabText(index).replace("&&", "&"): index for index in range(self.editor_tabs.count())}
         layout = QVBoxLayout(self.sidebar_frame)
-        layout.setContentsMargins(0, 18, 0, 14)
-        layout.setSpacing(6)
-        brand = QLabel("CUTWEAVE")
-        brand.setStyleSheet("font-size: 15pt; font-weight: 800; padding-left: 22px; color: #ffffff;")
-        layout.addWidget(brand)
-        tagline = QLabel("Montage automatique local")
-        tagline.setProperty("role", "faint")
-        tagline.setStyleSheet("padding-left: 22px; padding-bottom: 10px;")
-        layout.addWidget(tagline)
+        layout.setContentsMargins(0, 14, 0, 12)
+        layout.setSpacing(4)
+        head = QHBoxLayout()
+        head.setContentsMargins(18, 0, 10, 0)
+        self.brand = QLabel("CUTWEAVE")
+        self.brand.setStyleSheet("font-size: 15pt; font-weight: 800; color: #ffffff;")
+        head.addWidget(self.brand, 1)
+        self.sidebar_toggle = make_button("", "ghost", "panel", tooltip="Réduire / agrandir le menu")
+        self.sidebar_toggle.setFixedSize(34, 34)
+        self.sidebar_toggle.clicked.connect(self._toggle_sidebar)
+        head.addWidget(self.sidebar_toggle)
+        layout.addLayout(head)
+        self.tagline = QLabel("Montage automatique local")
+        self.tagline.setProperty("role", "faint")
+        self.tagline.setStyleSheet("padding-left: 18px; padding-bottom: 10px;")
+        layout.addWidget(self.tagline)
 
         def editor_tab(name):
             return lambda: (self.pages.setCurrentIndex(1), self.editor_tabs.setCurrentIndex(tabs[name]))
 
-        self._sidebar_actions = [
-            ("✦   Studio", lambda: self.pages.setCurrentIndex(0)),
-            ("✎   Éditeur", lambda: self.pages.setCurrentIndex(1)),
-            ("      Visuel", editor_tab("Visuel")),
-            ("      Captions", editor_tab("Presets captions")),
-            ("      Masques", editor_tab("Masques")),
-            ("      B-roll", editor_tab("B-roll")),
-            ("      Musique & SFX", editor_tab("Musique & SFX")),
-            ("      Règles & marqueurs", editor_tab("Règles & marqueurs")),
-            ("      Pipeline", editor_tab("Pipeline")),
-            ("♫   Bibliothèque", lambda: (self.pages.setCurrentIndex(2), self.library_page.refresh())),
-            ("⏱   Historique", self.show_task_history),
-            ("☰   Journaux", self.open_log_folder),
-            ("⚙   Paramètres", self.show_settings),
+        self._nav = [  # (libellé, icône, action, sous-élément de l'éditeur)
+            ("Studio", "sparkles", lambda: self.pages.setCurrentIndex(0), False),
+            ("Éditeur", "edit", lambda: self.pages.setCurrentIndex(1), False),
+            ("Visuel", "crop", editor_tab("Visuel"), True),
+            ("Captions", "type", editor_tab("Captions"), True),
+            ("Style captions", "palette", editor_tab("Style captions"), True),
+            ("Masques", "mask", editor_tab("Masques"), True),
+            ("B-roll", "image", editor_tab("B-roll"), True),
+            ("Musique & SFX", "music", editor_tab("Musique & SFX"), True),
+            ("Règles & marqueurs", "rules", editor_tab("Règles & marqueurs"), True),
+            ("Pipeline", "activity", editor_tab("Pipeline"), True),
+            ("Bibliothèque", "book", lambda: (self.pages.setCurrentIndex(2), self.library_page.refresh()), False),
+            ("Historique", "clock", self.show_task_history, False),
+            ("Journaux", "list", self.open_log_folder, False),
+            ("Paramètres", "settings", self.show_settings, False),
         ]
+        self._sidebar_actions = [(text, action) for text, _icon, action, _sub in self._nav]
+        self._nav_library_row = next(i for i, item in enumerate(self._nav) if item[0] == "Bibliothèque")
         self.sidebar = QListWidget()
         self.sidebar.setObjectName("nav")
         self.sidebar.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.sidebar.setTextElideMode(Qt.TextElideMode.ElideRight)
-        for label, _action in self._sidebar_actions:
-            self.sidebar.addItem(QListWidgetItem(label))
+        self.sidebar.setIconSize(QSize(18, 18))
+        self.sidebar.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        for text, icon_name, _action, sub in self._nav:
+            item = QListWidgetItem(icons.icon(icon_name, theme.MUTED, 18), text)
+            item.setData(Qt.ItemDataRole.UserRole + 1, sub)
+            item.setToolTip(text)
+            self.sidebar.addItem(item)
         self.sidebar.itemClicked.connect(self._sidebar_clicked)
         self.sidebar.setCurrentRow(0)
         layout.addWidget(self.sidebar, 1)
         self.pages.currentChanged.connect(self._page_changed)
 
-        project_box = QFrame()
-        project_box.setProperty("card", "true")
-        box = QVBoxLayout(project_box)
+        self.project_box = QFrame()
+        self.project_box.setProperty("card", "true")
+        box = QVBoxLayout(self.project_box)
         box.setContentsMargins(12, 10, 12, 10)
         box.setSpacing(6)
         caption = QLabel("PROJET")
@@ -685,17 +765,50 @@ class MainWindow(QMainWindow):
         self.sidebar_project.setWordWrap(True)
         box.addWidget(self.sidebar_project)
         buttons = QHBoxLayout()
-        new_button = QPushButton("Nouveau")
+        buttons.setSpacing(6)
+        new_button = make_button("Nouveau", None, "plus")
         new_button.clicked.connect(self.new_project)
-        open_button = QPushButton("Ouvrir…")
+        open_button = make_button("Ouvrir", None, "folder")
         open_button.clicked.connect(self.open_project)
         buttons.addWidget(new_button)
         buttons.addWidget(open_button)
         box.addLayout(buttons)
         wrapper = QHBoxLayout()
         wrapper.setContentsMargins(12, 0, 12, 0)
-        wrapper.addWidget(project_box)
+        wrapper.addWidget(self.project_box)
         layout.addLayout(wrapper)
+        self.project_compact = make_button("", "ghost", "folder", tooltip="Ouvrir un projet…")
+        self.project_compact.setFixedSize(40, 36)
+        self.project_compact.clicked.connect(self.open_project)
+        compact_row = QHBoxLayout()
+        compact_row.addWidget(self.project_compact, 0, Qt.AlignmentFlag.AlignHCenter)
+        layout.addLayout(compact_row)
+        self._sidebar_compact: bool | None = None
+        self._sidebar_forced: bool | None = None
+        self._sidebar_auto: bool | None = None
+        self._apply_sidebar_mode(False)
+
+    def _toggle_sidebar(self):
+        self._sidebar_forced = not bool(self._sidebar_compact)
+        self._apply_sidebar_mode(self._sidebar_forced)
+
+    def _apply_sidebar_mode(self, compact: bool):
+        short = self.height() < 800          # écran peu haut : les sous-onglets sont dans l'éditeur
+        if (compact, short) == (self._sidebar_compact, getattr(self, "_sidebar_short", None)):
+            return
+        self._sidebar_compact, self._sidebar_short = compact, short
+        self.sidebar_frame.setFixedWidth(68 if compact else 232)
+        self.brand.setVisible(not compact)
+        self.tagline.setVisible(not compact)
+        self.project_box.setVisible(not compact)
+        self.project_compact.setVisible(compact)
+        for row, (text, _icon, _action, sub) in enumerate(self._nav):
+            item = self.sidebar.item(row)
+            item.setText("" if compact else (("      " if sub else "") + text))
+            item.setHidden((compact or short) and sub)
+            item.setSizeHint(QSize(0, 36))
+        if compact:
+            self.sidebar_toggle.setToolTip("Agrandir le menu")
 
     def _sidebar_clicked(self, item):
         row = self.sidebar.row(item)
@@ -707,10 +820,20 @@ class MainWindow(QMainWindow):
             self.studio.player.pause()
         if index != 1:
             self.player.pause()
-        row = {0: 0, 1: 1, 2: 9}.get(index)
+        row = {0: 0, 1: 1, 2: self._nav_library_row}.get(index)
         current = self.sidebar.currentRow()
-        if row is not None and not (index == 1 and 1 <= current <= 8):
+        if row is not None and not (index == 1 and 1 <= current < self._nav_library_row):
             self.sidebar.setCurrentRow(row)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if not hasattr(self, "_nav"):
+            return
+        auto = self.width() < 1180
+        if auto != self._sidebar_auto:   # le choix manuel est abandonné quand la fenêtre change de catégorie
+            self._sidebar_auto = auto
+            self._sidebar_forced = None
+        self._apply_sidebar_mode(auto if self._sidebar_forced is None else self._sidebar_forced)
 
     def _build_menu(self):
         project_menu = self.menuBar().addMenu("Projet")
@@ -997,10 +1120,12 @@ class MainWindow(QMainWindow):
             ]
             for column, value in enumerate(values):
                 cell = QTableWidgetItem(value)
+                cell.setToolTip(f"{item.path}\n{values[3]} images/s · audio : {values[4]}")
                 if column == 0:
                     cell.setData(Qt.ItemDataRole.UserRole, item.id)
                 self.table.setItem(row, column, cell)
-        self.table.resizeColumnsToContents()
+        self.media_empty.setVisible(not self.media)
+        self.table.setVisible(bool(self.media))
         self.export_button.setEnabled(self.store is not None and bool(self.media) and self.thread is None)
         for button in (self.visual_stage_button, self.composition_stage_button, self.finishing_stage_button):
             button.setEnabled(self.store is not None and bool(self.media) and self.thread is None)
@@ -1662,7 +1787,7 @@ class MainWindow(QMainWindow):
         self.player.setSource(QUrl.fromLocalFile(str(asset.path)))
         self.player_status.setText(f"Prévisualisation audio : {asset.name}")
         self.player.play()
-        self.play_button.setText("Pause")
+        apply_icon(self.play_button, "pause", "ghost")
 
     def save_music_mix(self):
         media = self._selected_media()
@@ -2035,7 +2160,7 @@ class MainWindow(QMainWindow):
         self.player.setSource(QUrl.fromLocalFile(str(asset.path)))
         self.player_status.setText(f"Prévisualisation B-roll : {asset.name}")
         self.player.play()
-        self.play_button.setText("Pause")
+        apply_icon(self.play_button, "pause", "ghost")
 
     def _playback_error(self, error, error_string: str):
         if error != QMediaPlayer.Error.NoError:
@@ -2045,10 +2170,10 @@ class MainWindow(QMainWindow):
     def _toggle_play(self):
         if self.player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
             self.player.pause()
-            self.play_button.setText("Lecture")
+            apply_icon(self.play_button, "play", "ghost")
         else:
             self.player.play()
-            self.play_button.setText("Pause")
+            apply_icon(self.play_button, "pause", "ghost")
 
     def _aspect_changed(self, value: str):
         dimensions = {"9:16": (1080, 1920), "16:9": (1920, 1080), "1:1": (1080, 1080)}
@@ -2587,6 +2712,10 @@ class MainWindow(QMainWindow):
             QTimer.singleShot(0, self._show_tracking_roi)
 
     def closeEvent(self, event):
+        try:
+            self._geometry_store.setValue("geometry", self.saveGeometry())
+        except Exception:  # la mémorisation de la fenêtre ne doit jamais empêcher de fermer
+            pass
         if self.cancel_event:
             self.cancel_event.set()
         if self.thread:
