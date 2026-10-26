@@ -4,6 +4,15 @@ Format inspiré de [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) ; ve
 
 ## [Non publié]
 
+### Ajouté
+- **Volume normalisé** (−14 LUFS) à l'export, option du Studio et module de l'éditeur.
+- **Destinations** (TikTok, Reels, Shorts, YouTube, Instagram) : format, qualité, durée conseillée, sous-titres relevés
+  au-dessus de l'interface de la plateforme, avertissement si la durée dépasse la limite.
+- **Choix des rushs** avant le montage : décocher un rush l'écarte, double-clic pour n'utiliser qu'une plage (début/fin).
+  Les fichiers d'origine ne sont jamais modifiés ; les sous-titres suivent la plage retenue.
+- **Frise visuelle** : durée de chaque plan réglable à la souris (ou au clavier), retrait d'un plan ; musique, effets,
+  ducking et sous-titres sont recalés, les plans déjà rendus sont réutilisés.
+
 ## [0.2.0]
 
 ### Ajouté

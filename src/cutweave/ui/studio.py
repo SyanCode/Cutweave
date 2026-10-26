@@ -17,12 +17,17 @@ from PySide6.QtWidgets import (
 
 from cutweave.assets.library import LOOKS, music_catalog
 from cutweave.autoedit.modes import MODES, MODES_BY_KEY, VARIANTS
+from cutweave.autoedit.platforms import PLATFORMS, platform_by_key
+from cutweave.autoedit.rush_settings import RushSettings, load_rush_settings, save_rush_settings
 from cutweave.autoedit.service import (
-    STAGE, StudioRequest, VariantResult, export_variant, generate_variants, list_variants, rush_media,
+    STAGE, StudioError, StudioRequest, VariantResult, apply_timeline_edit, export_variant, generate_variants,
+    list_variants, load_plan, rush_media,
 )
 from cutweave.media.files import collect_video_files
 from cutweave.media.thumbnails import ThumbnailError, create_video_thumbnail
 from cutweave.ui import icons, theme
+from cutweave.ui.rush_dialog import RushRangeDialog
+from cutweave.ui.timeline_dialog import TimelineDialog
 from cutweave.ui.theme import set_role
 from cutweave.ui.widgets import (
     FormGrid, ReflowGrid, Segmented, apply_icon, button, card, icon_badge, label, rgba,
@@ -228,6 +233,10 @@ class VariantCard(ClickableCard):
         if result.subtitle_quality >= 0:
             facts.append(f"sous-titres {result.subtitle_quality:.0%}")
         text.addWidget(label("  ·  ".join(facts), "faint", wrap=True))
+        if result.warning:
+            warning = label(result.warning, "faint", wrap=True)
+            warning.setStyleSheet("color: #ffb020;")
+            text.addWidget(warning)
         text.addStretch()
         layout.addLayout(text, 1)
 
@@ -248,6 +257,7 @@ class StudioPage(QWidget):
         self.cards: dict[str, VariantCard] = {}
         self.current: VariantResult | None = None
         self._custom_music: str | None = None
+        self._settings, self._settings_root, self._refreshing = RushSettings(), None, False
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         self.pages = QStackedWidget()
@@ -322,8 +332,10 @@ class StudioPage(QWidget):
         self.rush_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.rush_list.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)
         self.rush_list.setAcceptDrops(False)
+        self.rush_list.itemChanged.connect(self._rush_item_changed)
+        self.rush_list.itemDoubleClicked.connect(self.edit_rush_range)
         rush_layout.addWidget(self.rush_list)
-        rush_layout.addWidget(label("Sélectionne des rushs et appuie sur Suppr pour les écarter du montage "
+        rush_layout.addWidget(label("Décoche un rush pour l'écarter, double-clique pour n'en garder qu'une partie "
                                     "(les fichiers d'origine ne sont jamais modifiés).", "faint", wrap=True))
         self.rush_panel.setVisible(False)
         column.addWidget(self.rush_panel)
@@ -340,6 +352,12 @@ class StudioPage(QWidget):
 
         column.addWidget(label("ÉTAPE 3 · LES RÉGLAGES (FACULTATIF)", "step"))
         settings, settings_layout = card()
+        self.platform = compact_combo(QComboBox())
+        for destination in PLATFORMS:
+            self.platform.addItem(destination.title, destination.key)
+        self.platform.setToolTip("Règle le format, la qualité et la durée, et relève les sous-titres au-dessus de "
+                                 "l'interface de la plateforme.")
+        self.platform.currentIndexChanged.connect(self._platform_changed)
         self.aspect = Segmented((("9:16 Vertical", "9:16"), ("16:9 Horizontal", "16:9"), ("1:1 Carré", "1:1")))
         self.duration = compact_combo(QComboBox())
         for text, value in DURATIONS:
@@ -384,15 +402,25 @@ class StudioPage(QWidget):
         self.clean_noise = QCheckBox("Retirer les bruits : toux, claquements, souffle…")
         self.clean_noise.setCursor(Qt.CursorShape.PointingHandCursor)
         self.clean_noise.setChecked(True)
+        self.normalize = QCheckBox("Normaliser le volume (−14 LUFS, niveau des plateformes)")
+        self.normalize.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.normalize.setChecked(True)
+        self.normalize.setToolTip("Musique et voix sont ramenées au niveau d'écoute standard de YouTube, TikTok et Instagram.")
+        sound_box = QWidget()
+        sound_layout = QVBoxLayout(sound_box)
+        sound_layout.setContentsMargins(0, 0, 0, 0)
+        sound_layout.setSpacing(8)
+        sound_layout.addWidget(self.clean_noise)
+        sound_layout.addWidget(self.normalize)
         self.clean_noise.setToolTip("Vlog et Face cam : tout son fort qui n'est pas de la voix est coupé, partout. "
                                     "Le son d'origine des plans d'illustration (sans voix) est aussi coupé.")
         self.settings_form = FormGrid((
-            ("Format", self.aspect), ("Durée", self.duration),
+            ("Destination", self.platform), ("Durée", self.duration),
+            ("Format", self.aspect), ("Cadrage", self.fit),
             ("Musique", self.music), ("Look", self.look),
-            ("Cadrage", self.fit), ("Variantes", self.variant_count),
+            ("Variantes", self.variant_count), ("Qualité d'export", self.quality),
             (self.title_toggle, self.title_edit), (self.outro_toggle, self.outro_edit),
-            ("Aperçu", self.preview_mode), ("Qualité d'export", self.quality),
-            ("Son", self.clean_noise),
+            ("Aperçu", self.preview_mode), ("Son", sound_box),
         ))
         settings_layout.addWidget(self.settings_form)
         column.addWidget(settings)
@@ -439,6 +467,18 @@ class StudioPage(QWidget):
         column.addStretch()
         self._create_body = body
         return scroll_area(body)
+
+    def _platform_changed(self, _index: int):
+        destination = platform_by_key(self.platform.currentData())
+        if destination.key == "free":
+            return
+        self.aspect.set_value(destination.aspect)
+        self.quality.set_value(destination.quality)
+        if destination.default_seconds is not None and self.duration.currentData() is None:
+            index = self.duration.findData(destination.default_seconds)
+            if index >= 0:
+                self.duration.setCurrentIndex(index)
+        self.platform.setToolTip(destination.note)
 
     def _subtitle_state_changed(self, checked: bool):
         for widget in (self.script_edit, self.script_import, self.subtitle_grouping):
@@ -656,6 +696,9 @@ class StudioPage(QWidget):
         self.refine_button = button("Peaufiner dans l'éditeur", None, "edit")
         self.refine_button.clicked.connect(self.refine_current)
         actions_layout.addWidget(self.refine_button)
+        self.timeline_button = button("Ajuster la frise…", "ghost", "scissors")
+        self.timeline_button.clicked.connect(self.edit_timeline)
+        actions_layout.addWidget(self.timeline_button)
         actions_layout.addWidget(label("Dans l'éditeur, tout reste modifiable : titres, musique, volume, SFX, "
                                        "cadrage, masques, B-roll…", "faint", wrap=True))
         side.addWidget(actions)
@@ -701,12 +744,51 @@ class StudioPage(QWidget):
             existing = self.music.findData(path)
         self.music.setCurrentIndex(existing)
 
+    def _active(self):
+        """Rushs retenus pour le montage, avec leur plage éventuelle."""
+        settings = self._rush_settings()
+        return [(media, settings.range_for(media.id, media.duration)) for media in self._rushes()
+                if not media.missing and settings.enabled(media.id)]
+
+    def _rush_settings(self) -> RushSettings:
+        store = self.main.store
+        if store is None:
+            return RushSettings()
+        if self._settings_root != store.root:
+            self._settings, self._settings_root = load_rush_settings(store.root), store.root
+        return self._settings
+
+    def _rush_item_changed(self, item: QListWidgetItem):
+        store = self.main.store
+        if store is None or self._refreshing:
+            return
+        settings = self._rush_settings()
+        settings.set_enabled(item.data(Qt.ItemDataRole.UserRole), item.checkState() == Qt.CheckState.Checked)
+        save_rush_settings(store.root, settings)
+        self._update_cta()
+
+    def edit_rush_range(self, item: QListWidgetItem):
+        store = self.main.store
+        if store is None or self.main.thread is not None:
+            return
+        media = next((m for m in self._rushes() if m.id == item.data(Qt.ItemDataRole.UserRole)), None)
+        if media is None or media.missing or not media.duration:
+            return
+        settings = self._rush_settings()
+        dialog = RushRangeDialog(str(media.path), media.name, media.duration, settings.range_for(media.id), self)
+        if dialog.exec() != RushRangeDialog.DialogCode.Accepted:
+            return
+        settings.set_range(media.id, dialog.result_window)
+        save_rush_settings(store.root, settings)
+        self.refresh()
+
     def _rushes(self):
         store = self.main.store
         return rush_media(store) if store else []
 
     def _update_cta(self):
-        rushes = [media for media in self._rushes() if not media.missing]
+        active = self._active()
+        rushes = [media for media, _window in active]
         mode = MODES_BY_KEY[self.selected_mode]
         count = self.variant_count.value() if hasattr(self, "variant_count") else 3
         if hasattr(self, "generate_button"):
@@ -720,7 +802,7 @@ class StudioPage(QWidget):
             elif needs_script:
                 self.cta_hint.setText("Colle ou importe le script pour les sous-titres, ou décoche-les.")
             else:
-                total = sum(media.duration or 0 for media in rushes)
+                total = sum((window[1] - window[0]) if window else (media.duration or 0) for media, window in active)
                 self.cta_hint.setText(f"{len(rushes)} rush{'s' if len(rushes) > 1 else ''} · "
                                       f"{int(total // 60)} min {int(total % 60):02d} de matière · style {mode.title}"
                                       " · 100 % local, sans IA")
@@ -732,16 +814,24 @@ class StudioPage(QWidget):
             else "Dépose tes rushs, choisis un style : CUTWEAVE monte tout seul, en local.")
         self.rush_list.clear()
         rushes = self._rushes()
+        settings = self._rush_settings()
+        self._refreshing = True
         for media in rushes:
             thumb = str(store.cache_root / "thumbnails" / f"rush-{media.id}.jpg") if store else None
             duration = f"{int((media.duration or 0) // 60)}:{int((media.duration or 0) % 60):02d}"
+            window = settings.range_for(media.id, media.duration)
+            if window:
+                duration = f"✂ {int(window[0] // 60)}:{int(window[0] % 60):02d}–{int(window[1] // 60)}:{int(window[1] % 60):02d}"
             item = QListWidgetItem(QIcon(_rounded_pixmap(thumb, QSize(144, 81), 8)),
                                    f"{media.name[:20]}{'…' if len(media.name) > 20 else ''}\n{duration}"
                                    + ("  · manquant" if media.missing else ""))
             item.setData(Qt.ItemDataRole.UserRole, media.id)
-            item.setToolTip(str(media.path))
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            item.setCheckState(Qt.CheckState.Checked if settings.enabled(media.id) else Qt.CheckState.Unchecked)
+            item.setToolTip(f"{media.path}\nCoche pour garder · double-clic pour choisir la plage à utiliser")
             item.setSizeHint(QSize(160, 124))
             self.rush_list.addItem(item)
+        self._refreshing = False
         self.rush_panel.setVisible(bool(rushes))
         self._refresh_recent()
         self._ensure_thumbnails(store, rushes)
@@ -785,6 +875,7 @@ class StudioPage(QWidget):
         self._update_cta()
         self.export_button.setEnabled(not busy and self.current is not None)
         self.refine_button.setEnabled(not busy and self.current is not None)
+        self.timeline_button.setEnabled(not busy and self.current is not None)
 
     def keyPressEvent(self, event):
         if event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace) and self.rush_list.hasFocus():
@@ -831,14 +922,16 @@ class StudioPage(QWidget):
         music = self.music.currentData()
         if music == "custom":
             music = self._custom_music or "auto"
-        rushes = tuple(str(media.path) for media in self._rushes() if not media.missing)
+        active = self._active()
+        rushes = tuple(str(media.path) for media, _window in active)
         return StudioRequest(
-            rushes=rushes, mode=self.selected_mode, aspect=self.aspect.value(), quality=self.quality.value(),
+            rushes=rushes, ranges=tuple(window for _media, window in active), mode=self.selected_mode, aspect=self.aspect.value(), quality=self.quality.value(),
             duration=self.duration.currentData(), music=music, look=self.look.currentData(), fit=self.fit.value(),
             title=self.title_edit.text().strip() if self.title_toggle.isChecked() else "",
             outro=self.outro_edit.text().strip() if self.outro_toggle.isChecked() else "",
             variants=self.variant_count.value(), draft=bool(self.preview_mode.value()),
-            clean_noise=self.clean_noise.isChecked(),
+            clean_noise=self.clean_noise.isChecked(), normalize=self.normalize.isChecked(),
+            platform=self.platform.currentData() or "free",
             script=self.script_edit.toPlainText() if self.subtitle_toggle.isChecked() else "",
             subtitles=self.subtitle_grouping.value() if self.subtitle_toggle.isChecked() else "off",
         )
@@ -881,7 +974,8 @@ class StudioPage(QWidget):
         self.results = list_variants(self.main.store)
         self._populate_results(select=results[0].key if results else None)
         self.pages.setCurrentIndex(2)
-        self.main.notify(f"{len(results)} variante(s) prête(s) — choisis ta préférée.")
+        self.main.notify(f"{len(results)} variante(s) prête(s) — choisis ta préférée." if len(results) > 1
+                         else "Montage mis à jour.")
 
     def task_finished(self):
         if self.pages.currentIndex() == 1:
@@ -951,7 +1045,8 @@ class StudioPage(QWidget):
         store = self.main.store
         if result is None or store is None or self.main.thread is not None:
             return
-        default = Path.home() / "Videos" / f"{store.manifest['name']} - {result.key}.mp4"
+        suffix = f" - {platform_by_key(result.platform).title}" if result.platform not in ("", "free") else ""
+        default = Path.home() / "Videos" / f"{store.manifest['name']}{suffix} - {result.letter}.mp4"
         destination, _ = QFileDialog.getSaveFileName(self, "Exporter la vidéo", str(default), "Vidéo MP4 (*.mp4)")
         if not destination:
             return
@@ -972,6 +1067,34 @@ class StudioPage(QWidget):
                 self.main.media_changed()
 
         self.main.run_task(operation, done)
+
+    def edit_timeline(self):
+        result, store = self.current, self.main.store
+        if result is None or store is None or self.main.thread is not None:
+            return
+        try:
+            plan = load_plan(store, result)
+        except StudioError as exc:
+            QMessageBox.warning(self, "Frise indisponible", str(exc))
+            return
+        dialog = TimelineDialog(plan, self)
+        if dialog.exec() != TimelineDialog.DialogCode.Accepted:
+            return
+        durations, removed = dialog.result_edit()
+        self.player.stop()
+        self.player.setSource(QUrl())
+        self.progress_title.setText(f"Nouveau montage de la variante {result.letter}…")
+        self.progress_message.setText("Les plans déjà rendus sont réutilisés.")
+        self.progress_steps.setText("Frise")
+        self.progress_bar.setValue(0)
+        self.pages.setCurrentIndex(1)
+        self.main.cancel_event = threading.Event()
+
+        def operation(progress, cancel_event):
+            return [apply_timeline_edit(store, result, durations, removed, on_progress=progress,
+                                        cancel_event=cancel_event)]
+
+        self.main.run_task(operation, self._generation_done)
 
     def refine_current(self):
         if self.current is not None:

@@ -207,3 +207,27 @@ def test_wrong_script_stops_the_montage_with_an_explanation(tmp_path, project):
                             script="Un texte qui ne correspond à aucune voix de ces rushs.", subtitles="phrase")
     with pytest.raises(SubtitleError):
         generate_variants(project, request, assets_root=tmp_path / "assets")
+
+
+def test_rush_range_and_timeline_edit_end_to_end(project, tmp_path):
+    from cutweave.autoedit.service import apply_timeline_edit, load_plan
+
+    medias = rush_media(project)
+    talk = next(media for media in medias if media.name == "talk.mp4")
+    rushes = tuple(str(media.path) for media in medias)
+    ranges = tuple((2.0, 7.0) if media.id == talk.id else None for media in medias)
+    request = StudioRequest(rushes, "edit", "9:16", 120, 8.0, "auto", None, "fill", "", "", 1, ranges=ranges)
+    result = generate_variants(project, request, assets_root=tmp_path / "assets")[0]
+    plan = load_plan(project, result)
+    for shot in plan.shots:
+        if shot.source == str(talk.path):
+            assert shot.source_start >= 2.0 - 1e-6 and shot.source_start + shot.source_duration <= 7.0 + 1e-6
+
+    durations = [shot.duration for shot in plan.shots]
+    durations[0] += 0.5
+    updated = apply_timeline_edit(project, result, durations, removed=[len(plan.shots) - 1],
+                                  assets_root=tmp_path / "assets")
+    assert updated.shots == len(plan.shots) - 1
+    assert updated.duration == pytest.approx(load_plan(project, updated).duration, abs=0.15)
+    assert probe_media(updated.preview).duration == pytest.approx(updated.duration, abs=0.2)
+    assert len(rush_media(project)) == 3

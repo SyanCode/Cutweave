@@ -25,9 +25,10 @@ MODULE_LABELS = {
     "broll": "B-roll (placements et règles)",
     "music": "Musique et ducking",
     "sfx": "SFX (placements et règles)",
+    "loudness": "Volume normalisé (−14 LUFS)",
 }
 MODULE_STAGE = {"framing": "visual", "sharpening": "visual", "masks": "composition", "broll": "composition",
-                "captions": "finishing", "music": "finishing", "sfx": "finishing"}
+                "captions": "finishing", "music": "finishing", "sfx": "finishing", "loudness": "finishing"}
 STATUS_LABELS = {"succeeded": "terminée", "running": "interrompue", "failed": "échec", "cancelled": "annulée"}
 
 

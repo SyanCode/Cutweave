@@ -21,7 +21,7 @@ import logging
 import subprocess
 import threading
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
 import numpy as np
@@ -63,6 +63,7 @@ class RushAnalysis:
     fine_loudness: tuple[float, ...] = ()     # niveau sonore par pas de FINE_STEP (précision des coupes)
     fine_voicing: tuple[float, ...] = ()      # périodicité (0..1) par pas de FINE_STEP : voix vs bruit
     syllable_env: tuple[float, ...] = ()      # énergie 250–2500 Hz (dB) par pas de ENV_STEP : noyaux de syllabes
+    offset: float = 0.0                       # début de la plage retenue dans le fichier (rush recadré)
 
     @property
     def samples(self) -> int:
@@ -91,6 +92,30 @@ class RushAnalysis:
         data["fine_voicing"] = tuple(float(value) for value in data.get("fine_voicing", ()))
         data["syllable_env"] = tuple(float(value) for value in data.get("syllable_env", ()))
         return cls(**data)
+
+
+def trim_analysis(analysis: RushAnalysis, start: float, end: float) -> RushAnalysis:
+    """Analyse limitée à la plage [start, end] du rush ; ``offset`` ramène les instants au fichier d'origine."""
+    start = max(0.0, start)
+    end = min(analysis.duration, end)
+    if end - start < 0.5:
+        raise ValueError("la plage retenue doit durer au moins 0,5 s.")
+    if start <= 0.0 and end >= analysis.duration:
+        return analysis
+
+    def cut(values, step):
+        return tuple(values[int(round(start / step)):int(round(end / step))])
+
+    activity = tuple((max(a, start) - start, min(b, end) - start) for a, b in analysis.activity
+                     if min(b, end) - max(a, start) > 0.05)
+    return replace(
+        analysis, duration=round(end - start, 3),
+        motion=cut(analysis.motion, STEP), brightness=cut(analysis.brightness, STEP),
+        sharpness=cut(analysis.sharpness, STEP), loudness=cut(analysis.loudness, STEP),
+        fine_loudness=cut(analysis.fine_loudness, FINE_STEP), fine_voicing=cut(analysis.fine_voicing, FINE_STEP),
+        syllable_env=cut(analysis.syllable_env, ENV_STEP),
+        scene_cuts=tuple(c - start for c in analysis.scene_cuts if start < c < end),
+        activity=activity, offset=round(analysis.offset + start, 3))
 
 
 def file_fingerprint(path: Path) -> str:

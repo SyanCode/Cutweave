@@ -25,6 +25,8 @@ from cutweave.stages.visual.framing import FramingKeyframe, interpolation_expres
 
 
 LOGGER = logging.getLogger("cutweave.render")
+TARGET_LUFS = -14.0       # niveau d'écoute des plateformes de partage (YouTube, TikTok, Instagram)
+LOUDNORM = f"loudnorm=I={TARGET_LUFS:g}:TP=-1.5:LRA=11"
 
 
 class RenderError(RuntimeError):
@@ -335,6 +337,7 @@ def build_render_command(
     music: MusicRenderTrack | None = None,
     sfx: Sequence[SfxRenderClip] = (),
     source_has_audio: bool | None = None,
+    normalize_audio: bool = False,
 ) -> list[str]:
     settings.validate()
     binary = ffmpeg_path()
@@ -488,9 +491,10 @@ def build_render_command(
             audio_labels.insert(0, "main_a")
         mix_inputs = "".join(f"[{label}]" for label in audio_labels)
         duration_mode = "first" if source_has_audio is not False else "longest"
+        loudness = LOUDNORM + "," if normalize_audio else ""
         filter_chains.append(
             f"{mix_inputs}amix=inputs={len(audio_labels)}:duration={duration_mode}:dropout_transition=0:normalize=0,"
-            "alimiter=limit=0.98[mix_a]"
+            f"{loudness}alimiter=limit=0.98[mix_a]"
         )
         if audio_timeline_duration is not None:
             filter_chains.append(f"[mix_a]atrim=duration={audio_timeline_duration / 1000:.3f}[audio_out]")
@@ -509,6 +513,8 @@ def build_render_command(
             command.extend(["-map", "[audio_out]"])
         elif broll or video_label is not None:
             command.extend(["-map", "0:a?"])
+    if normalize_audio and not audio_labels and source_has_audio is not False:
+        command.extend(["-af", f"{LOUDNORM},alimiter=limit=0.98"])    # audio d'origine seul : même niveau cible
     command.extend([
         "-c:v", encoder, *encoding_args, "-c:a", "aac", "-b:a", "192k",
         "-movflags", "+faststart", str(Path(destination).resolve()),
@@ -599,6 +605,7 @@ def render_visual(
     sfx: Sequence[SfxRenderClip] = (),
     source_has_audio: bool | None = None,
     duration_ms: int | None = None,
+    normalize_audio: bool = False,
 ) -> Path:
     """Rend le fichier final. ``on_progress`` reçoit une fraction 0..1 ou None si inconnue."""
     output = Path(destination).resolve()
@@ -618,7 +625,7 @@ def render_visual(
             caption_path.write_text(build_ass_content(captions, settings, caption_preset), encoding="utf-8", newline="\n")
         command = build_render_command(
             source_path, temporary, settings, caption_filename=caption_filename, masks=masks, broll=broll,
-            music=music, sfx=sfx, source_has_audio=source_has_audio,
+            music=music, sfx=sfx, source_has_audio=source_has_audio, normalize_audio=normalize_audio,
         )
         LOGGER.info("Rendu FFmpeg : %s -> %s", source_path.name, output.name)
         LOGGER.debug("Commande FFmpeg : %s", command)

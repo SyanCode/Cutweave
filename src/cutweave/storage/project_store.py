@@ -29,7 +29,8 @@ from cutweave.stages.finishing.sfx_rules import SfxRule, TimelineMarker
 PROJECT_FILE = "project.json"
 DATABASE_FILE = "cutweave.sqlite3"
 SCHEMA_VERSION = 1
-MODULES = ("framing", "sharpening", "captions", "masks", "broll", "music", "sfx")
+MODULES = ("framing", "sharpening", "captions", "masks", "broll", "music", "sfx", "loudness")
+DEFAULT_OFF = frozenset({"loudness"})   # activé seulement quand on le demande (le Studio l'active)
 
 
 @dataclass(frozen=True)
@@ -650,7 +651,7 @@ class ProjectStore:
     def module_enabled(self, module: str) -> bool:
         if module not in MODULES:
             raise ValueError(f"Module inconnu : {module}")
-        return bool(self.manifest.get("settings", {}).get("modules", {}).get(module, True))
+        return bool(self.manifest.get("settings", {}).get("modules", {}).get(module, module not in DEFAULT_OFF))
 
     def modules(self) -> dict[str, bool]:
         return {module: self.module_enabled(module) for module in MODULES}

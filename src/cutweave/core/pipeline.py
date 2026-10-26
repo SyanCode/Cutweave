@@ -90,6 +90,7 @@ class PipelineJob:
     modules: dict[str, bool] = field(default_factory=dict)
     generated_broll: int = 0
     generated_sfx: int = 0
+    normalize_audio: bool = False
 
     @property
     def visual_parameters(self) -> dict[str, Any]:
@@ -109,6 +110,7 @@ class PipelineJob:
             "music_duration_ms": self.music.timeline_duration_ms if self.music is not None else None,
             "sfx": [clip.placement for clip in self.sfx],
             "source_has_audio": self.source_has_audio,
+            "normalize_audio": self.normalize_audio,
         }
 
     def input_files(self, *, source=True, broll=True, audio=True) -> tuple[tuple[str, Path], ...]:
@@ -211,7 +213,7 @@ def collect_job(store: ProjectStore, media: ProjectMedia) -> PipelineJob:
         media=media, settings=settings, captions=tuple(captions), caption_preset=caption_preset,
         masks=tuple(masks), broll=tuple(broll), music=music, sfx=tuple(sfx),
         source_has_audio=source_has_audio, duration_ms=duration_ms, modules=modules,
-        generated_broll=generated_broll, generated_sfx=generated_sfx,
+        generated_broll=generated_broll, generated_sfx=generated_sfx, normalize_audio=bool(modules.get("loudness")),
     )
 
 
@@ -283,7 +285,7 @@ def build_stages(
         finishing_execute = render_step(
             "finishing", lambda deps: deps["composition"].path, neutral, captions=job.captions,
             caption_preset=job.caption_preset, music=job.music, sfx=job.sfx,
-            source_has_audio=job.source_has_audio,
+            source_has_audio=job.source_has_audio, normalize_audio=job.normalize_audio,
         )
         suffix = "step-v3"
     else:
@@ -325,6 +327,7 @@ def build_stages(
                 on_progress=fraction_reporter("render"), captions=job.captions,
                 caption_preset=job.caption_preset, masks=job.masks, broll=job.broll, music=job.music,
                 sfx=job.sfx, source_has_audio=job.source_has_audio, duration_ms=job.duration_ms,
+                normalize_audio=job.normalize_audio,
             ),
             cancel_event=stage_cancel,
         )

@@ -175,7 +175,7 @@ Un projet est un dossier contenant `project.json`, la base `cutweave.sqlite3`, `
 python -m pytest
 ```
 
-223 tests : modèles et validation, parsing de captions, montage automatique (analyse, tempo, sous-titres calés sur la voix, plans déterministes de chaque style, variantes et export de bout en bout), actifs synthétisés, presets, cache, orchestrateur, règles, tracking sur vidéo synthétique, rendus FFmpeg réels (cadrage, netteté, captions, masques, B-roll, musique, ducking, SFX), pipeline complet bout-en-bout depuis un projet, annulation, CLI, et démarrage de l'interface en mode hors écran (`QT_QPA_PLATFORM=offscreen`). Les médias de test sont générés à la volée (`lavfi`) ; les tests FFmpeg sont ignorés si FFmpeg est absent.
+230 tests : modèles et validation, parsing de captions, montage automatique (analyse, tempo, sous-titres calés sur la voix, plans déterministes de chaque style, variantes et export de bout en bout), actifs synthétisés, presets, cache, orchestrateur, règles, tracking sur vidéo synthétique, rendus FFmpeg réels (cadrage, netteté, captions, masques, B-roll, musique, ducking, SFX), pipeline complet bout-en-bout depuis un projet, annulation, CLI, et démarrage de l'interface en mode hors écran (`QT_QPA_PLATFORM=offscreen`). Les médias de test sont générés à la volée (`lavfi`) ; les tests FFmpeg sont ignorés si FFmpeg est absent.
 
 ## Construction d'un exécutable Windows
 
