@@ -246,7 +246,10 @@ class VariantCard(ClickableCard):
         chips = QHBoxLayout()
         chips.setSpacing(6)
         minutes, seconds = divmod(int(round(result.duration)), 60)
-        for chip in (f"{minutes}:{seconds:02d}", f"{result.shots} plans", f"♪ {result.music_title}", result.look_title):
+        chips_list = [f"{minutes}:{seconds:02d}", f"{result.shots} plans", f"♪ {result.music_title}", result.look_title]
+        if result.draft:
+            chips_list.append("⚡ aperçu 540p")
+        for chip in chips_list:
             chips.addWidget(_label(chip, "chip"))
         chips.addStretch()
         text.addLayout(chips)
@@ -388,7 +391,11 @@ class StudioPage(QWidget):
         self.variant_count = Segmented((("1", 1), ("2", 2), ("3", 3)))
         self.variant_count.set_value(3)
         self.variant_count.changed.connect(lambda _value: self._update_cta())
-        self.quality = Segmented((("1080p", 1080), ("720p · rapide", 720)))
+        self.quality = Segmented((("1080p", 1080), ("720p", 720), ("4K", 2160)))
+        self.quality.set_value(1080)
+        self.preview_mode = Segmented((("⚡ Aperçus rapides", True), ("Qualité finale", False)))
+        self.preview_mode.setToolTip("Aperçus rapides : les variantes sont montées en 540p (plusieurs fois plus vite) ; "
+                                     "la variante choisie est refaite à la qualité d'export au moment d'exporter.")
         self.title_edit = QLineEdit()
         self.title_edit.setPlaceholderText("Ex. : Week-end à Lisbonne")
         self.title_edit.setMaxLength(80)
@@ -400,7 +407,7 @@ class StudioPage(QWidget):
             ("Musique", self.music, "Look", self.look),
             ("Cadrage", self.fit, "Variantes", self.variant_count),
             ("Titre d'ouverture", self.title_edit, "Texte de fin", self.outro_edit),
-            ("Qualité", self.quality, None, None),
+            ("Aperçu", self.preview_mode, "Qualité d'export", self.quality),
         )
         for row, (label_a, widget_a, label_b, widget_b) in enumerate(rows):
             grid.addWidget(_label(label_a, "muted"), row, 0)
@@ -698,7 +705,7 @@ class StudioPage(QWidget):
             rushes=rushes, mode=self.selected_mode, aspect=self.aspect.value(), quality=self.quality.value(),
             duration=self.duration.currentData(), music=music, look=self.look.currentData(), fit=self.fit.value(),
             title=self.title_edit.text().strip(), outro=self.outro_edit.text().strip(),
-            variants=self.variant_count.value(),
+            variants=self.variant_count.value(), draft=bool(self.preview_mode.value()),
         )
 
     def generate(self):
@@ -815,13 +822,21 @@ class StudioPage(QWidget):
             return
         if Path(destination).suffix.lower() != ".mp4":
             destination += ".mp4"
-        self.player.pause()
+        if result.draft:
+            self.main.release_media()
+        else:
+            self.player.pause()
         self.main.cancel_event = threading.Event()
 
         def operation(progress, cancel_event):
             return export_variant(store, result, destination, on_progress=progress, cancel_event=cancel_event)
 
-        self.main.run_task(operation, lambda path: self.main.notify(f"Vidéo exportée : {path}"))
+        def done(path):
+            self.main.notify(f"Vidéo exportée : {path}")
+            if result.draft:
+                self.main.media_changed()
+
+        self.main.run_task(operation, done)
 
     def refine_current(self):
         if self.current is not None:

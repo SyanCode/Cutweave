@@ -106,3 +106,29 @@ def test_missing_filter_gives_a_clear_error(project, tmp_path, monkeypatch):
     with pytest.raises(Exception, match="filtres nécessaires"):
         generate_variants(project, StudioRequest(rushes, "edit", "9:16", 120, 6.0, "none", None, "fill", "", "", 1),
                           assets_root=tmp_path / "assets")
+
+
+def test_draft_previews_are_finalized_at_export_quality(project, tmp_path, monkeypatch):
+    from cutweave.autoedit import service
+
+    monkeypatch.setattr(service, "DRAFT_SHORT", 120)
+    rushes = tuple(str(media.path) for media in rush_media(project))
+    request = StudioRequest(rushes, "highlights", "9:16", 240, 8.0, "none", None, "fill", "", "", 1, draft=True)
+    assert request.is_draft and request.output_size(draft=True) == (120, 214)
+    (result,) = generate_variants(project, request, assets_root=tmp_path / "assets")
+    assert result.draft and (result.final_width, result.final_height) == (240, 426)
+    assert probe_media(result.preview).width == 120
+    media = next(item for item in project.list_media() if item.id == result.media_id)
+    assert service.is_draft_montage(project, media.id) and probe_media(media.path).width == 120
+    plan_before = (project.root / "montages" / f"{result.key}.plan.json").read_text(encoding="utf-8")
+
+    exported = export_variant(project, result, tmp_path / "final.mp4")
+    info = probe_media(exported)
+    assert (info.width, info.height) == (240, 426)
+    assert info.duration == pytest.approx(result.duration, abs=0.2)
+    assert not service.is_draft_montage(project, media.id)
+    refreshed = next(item for item in project.list_media() if item.id == result.media_id)
+    assert (refreshed.width, refreshed.height) == (240, 426)
+    assert project.get_visual_settings(media.id).width == 240
+    assert (project.root / "montages" / f"{result.key}.plan.json").read_text(encoding="utf-8") == plan_before
+    assert service.ensure_final(project, media.id) is False

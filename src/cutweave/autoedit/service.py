@@ -10,7 +10,8 @@ from __future__ import annotations
 import json
 import logging
 import shutil
-from dataclasses import asdict, dataclass
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Sequence
@@ -34,6 +35,7 @@ LOGGER = logging.getLogger("cutweave.autoedit")
 MONTAGE_DIR = "montages"
 STAGE = "autoedit"
 ASPECTS = {"9:16": (9, 16), "16:9": (16, 9), "1:1": (1, 1)}
+DRAFT_SHORT = 540   # petit côté (px) des aperçus rapides ; l'export est rendu à la qualité demandée
 
 
 class StudioError(RuntimeError):
@@ -53,14 +55,20 @@ class StudioRequest:
     title: str = ""
     outro: str = ""
     variants: int = 3
+    draft: bool = True
 
-    def output_size(self) -> tuple[int, int]:
+    @property
+    def is_draft(self) -> bool:
+        """Aperçus rapides : montage rendu en petit, puis refait à la qualité demandée à l'export."""
+        return self.draft and self.quality > DRAFT_SHORT
+
+    def output_size(self, *, draft: bool = False) -> tuple[int, int]:
         if self.aspect not in ASPECTS:
             raise StudioError("Format inconnu : choisissez 9:16, 16:9 ou 1:1.")
         if self.quality < 120 or self.quality > 2160:
             raise StudioError("La qualité doit être comprise entre 120p et 2160p.")
         ratio_w, ratio_h = ASPECTS[self.aspect]
-        short = self.quality
+        short = min(self.quality, DRAFT_SHORT) if draft and self.is_draft else self.quality
         if ratio_w <= ratio_h:
             width, height = short, short * ratio_h / ratio_w
         else:
@@ -85,6 +93,9 @@ class VariantResult:
     look_title: str
     aspect: str
     created_at: str
+    draft: bool = False          # aperçu rapide : le master sera refait en pleine qualité à l'export
+    final_width: int = 0
+    final_height: int = 0
 
     def to_json(self) -> dict:
         return asdict(self)
@@ -219,7 +230,8 @@ def generate_variants(
         raise StudioError("Ajoutez au moins un rush avant de lancer le montage.")
     if not 1 <= request.variants <= len(VARIANTS):
         raise StudioError(f"Nombre de variantes entre 1 et {len(VARIANTS)}.")
-    width, height = request.output_size()
+    width, height = request.output_size(draft=True)
+    final_width, final_height = request.output_size()
     emit = on_progress or (lambda _event: None)
 
     def report(fraction: float, message: str | None = None):
@@ -230,11 +242,19 @@ def generate_variants(
             raise StudioError("Montage annulé.")
 
     analysis_dir = store.cache_root / "analysis"
-    analyses: list[RushAnalysis] = []
-    for index, rush in enumerate(request.rushes):
+    analyses: list[RushAnalysis] = [None] * len(request.rushes)  # type: ignore[list-item]
+    finished = [0]
+
+    def analyze(index: int):
         cancelled()
-        report(0.12 * index / len(request.rushes), f"Analyse de {Path(rush).name}")
-        analyses.append(analyze_rush(rush, cache_dir=analysis_dir, cancel_event=cancel_event))
+        analyses[index] = analyze_rush(request.rushes[index], cache_dir=analysis_dir, cancel_event=cancel_event)
+        finished[0] += 1
+        report(0.12 * finished[0] / len(request.rushes), f"Rush analysé : {Path(request.rushes[index]).name}")
+
+    report(0.0, f"Analyse de {len(request.rushes)} rush(s)")
+    with ThreadPoolExecutor(max_workers=min(3, len(request.rushes))) as pool:
+        for future in [pool.submit(analyze, index) for index in range(len(request.rushes))]:
+            future.result()
     report(0.12, "Analyse terminée : construction des variantes")
 
     edit_request = EditRequest(request.mode, width, height, request.duration, request.look, request.music,
@@ -283,12 +303,64 @@ def generate_variants(
             media_id=media.id, master=str(master), preview=str(preview), thumbnail=thumbnail,
             duration=round(media.duration or plan.duration, 3), shots=len(plan.shots),
             music_title=music.title if music else "Sans musique", look_title=look.title if look else plan.look,
-            aspect=request.aspect, created_at=created,
+            aspect=request.aspect, created_at=created, draft=request.is_draft,
+            final_width=final_width, final_height=final_height,
         )
         _write_json(folder / f"{key}.result.json", result.to_json())
         results.append(result)
         report(base + share, f"{label} prête : {plan.summary}")
     return results
+
+
+def _result_for_media(store: ProjectStore, media_id: int) -> VariantResult | None:
+    return next((item for item in list_variants(store) if item.media_id == media_id), None)
+
+
+def is_draft_montage(store: ProjectStore, media_id: int) -> bool:
+    result = _result_for_media(store, media_id)
+    return bool(result and result.draft)
+
+
+def finalize_variant(store: ProjectStore, result: VariantResult, *, on_progress=None,
+                     cancel_event=None) -> VariantResult:
+    """Refait le master d'un aperçu rapide à la qualité demandée ; réglages et retouches conservés.
+
+    Le plan est identique (même graine, mêmes extraits) : seule la résolution change. Les plans déjà
+    rendus à cette résolution sont réutilisés depuis le cache.
+    """
+    if not result.draft:
+        return result
+    emit = on_progress or (lambda _event: None)
+    folder = store.root / MONTAGE_DIR
+    try:
+        plan = EditPlan.from_json(json.loads((folder / f"{result.key}.plan.json").read_text(encoding="utf-8")))
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        raise StudioError(f"Plan de montage introuvable pour {result.key} : {exc}") from exc
+    plan = replace(plan, width=result.final_width, height=result.final_height)
+    sources = {shot.source for shot in plan.shots}
+    has_audio = {source: analyze_rush(source, cache_dir=store.cache_root / "analysis",
+                                      cancel_event=cancel_event).has_audio for source in sources}
+    emit(ProgressEvent(STAGE, f"Rendu final {result.final_width}×{result.final_height} de la variante {result.letter}…", 0.0))
+    master = render_plan(
+        plan, folder / f"{result.key}.mp4", cache_dir=store.cache_root / "autoedit_shots", has_audio=has_audio,
+        cancel_event=cancel_event,
+        on_progress=lambda fraction: emit(ProgressEvent(STAGE, None, 0.6 * fraction)),
+    )
+    media = store.add_media(master, probe_media(master, cancel_event=cancel_event))
+    settings = store.get_visual_settings(media.id)
+    store.set_visual_settings(media.id, replace(settings, width=result.final_width, height=result.final_height))
+    final = replace(result, draft=False)
+    _write_json(folder / f"{result.key}.result.json", final.to_json())
+    return final
+
+
+def ensure_final(store: ProjectStore, media_id: int, *, on_progress=None, cancel_event=None) -> bool:
+    """Si ce média est un aperçu rapide du Studio, le refait en pleine qualité. Retourne vrai si fait."""
+    result = _result_for_media(store, media_id)
+    if result is None or not result.draft:
+        return False
+    finalize_variant(store, result, on_progress=on_progress, cancel_event=cancel_event)
+    return True
 
 
 def export_variant(store: ProjectStore, result: VariantResult, destination: str | Path, *,
@@ -297,6 +369,9 @@ def export_variant(store: ProjectStore, result: VariantResult, destination: str 
     media = next((item for item in store.list_media() if item.id == result.media_id), None)
     if media is None:
         raise StudioError("Le montage de cette variante n'existe plus dans le projet.")
+    if result.draft:
+        finalize_variant(store, result, on_progress=on_progress, cancel_event=cancel_event)
+        media = next(item for item in store.list_media() if item.id == result.media_id)
     return run_job(store, collect_job(store, media), destination=destination, cancel_event=cancel_event,
                    on_progress=on_progress)
 

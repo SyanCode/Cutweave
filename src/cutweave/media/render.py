@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Sequence
 
 from cutweave.core.proc import popen_hidden, run_hidden
+from cutweave.media.encoders import choose_encoder, encoder_args, tier_for
 from cutweave.stages.composition.captions import CaptionCue, sanitize_caption_markup
 from cutweave.stages.composition.broll import BrollRenderClip
 from cutweave.stages.composition.masking import MaskRegion
@@ -337,10 +338,11 @@ def build_render_command(
     binary = ffmpeg_path()
     if not binary:
         raise RenderError("FFmpeg est introuvable. Installez FFmpeg ou définissez CUTWEAVE_FFMPEG.")
-    encoder = select_video_encoder(_available_video_encoders(binary))
-    encoding_args = ["-preset", "medium", "-crf", "20"] if encoder == "libx264" else ["-b:v", "8M"]
-    if encoder == "mpeg4":
-        encoding_args = ["-q:v", "3"]
+    encoder = choose_encoder(binary, _available_video_encoders(binary), "final")
+    if encoder is None:
+        raise RenderError("Aucun encodeur vidéo compatible n'est disponible dans cette installation de FFmpeg.")
+    encoding_args = encoder_args(encoder, tier_for(settings.width, settings.height, final=True),
+                                 settings.width, settings.height)
     command = [binary, "-hide_banner", "-loglevel", "error", "-nostats", "-y", "-i", str(Path(source).resolve())]
     filter_chains: list[str] = []
     video_label = None
@@ -506,7 +508,7 @@ def build_render_command(
         elif broll or video_label is not None:
             command.extend(["-map", "0:a?"])
     command.extend([
-        "-c:v", encoder, *encoding_args, "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k",
+        "-c:v", encoder, *encoding_args, "-c:a", "aac", "-b:a", "192k",
         "-movflags", "+faststart", str(Path(destination).resolve()),
     ])
     return command

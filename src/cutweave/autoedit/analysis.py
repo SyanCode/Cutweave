@@ -20,6 +20,7 @@ import json
 import logging
 import subprocess
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -272,11 +273,12 @@ def analyze_rush(path: str | Path, *, cache_dir: str | Path | None = None, info:
     if not info.duration or info.duration <= 0:
         raise AnalysisError(f"Durée inconnue pour {source.name}.")
     samples = max(1, int(np.ceil(info.duration / STEP)))
-    motion, brightness, sharpness, cuts = _video_curves(source, samples, cancel_event)
-    if info.has_audio:
-        loudness, fine = _audio_curve(source, samples, cancel_event)
-    else:
-        loudness, fine = np.full(samples, -90.0), np.zeros(0)
+    # Image et son sont décodés en parallèle (deux processus FFmpeg indépendants).
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        video_job = pool.submit(_video_curves, source, samples, cancel_event)
+        audio_job = pool.submit(_audio_curve, source, samples, cancel_event) if info.has_audio else None
+        motion, brightness, sharpness, cuts = video_job.result()
+        loudness, fine = audio_job.result() if audio_job else (np.full(samples, -90.0), np.zeros(0))
     activity = activity_segments(fine, step=FINE_STEP, duration=info.duration) if info.has_audio else ()
     analysis = RushAnalysis(
         path=str(source), name=source.name, duration=float(info.duration),

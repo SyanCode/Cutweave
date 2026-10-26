@@ -250,3 +250,25 @@ def test_filters_exist_in_a_real_lgpl_ffmpeg_build():
     assert pipeline <= lgpl, sorted(pipeline - lgpl)
     for look in library.LOOKS:
         assert filter_names(look.filters) <= lgpl, look.key
+
+
+def test_plan_does_not_depend_on_resolution():
+    small = build_plan(RUSHES, MODES_BY_KEY["edit"], VARIANTS[0], EditRequest("edit", 540, 960), MUSIC)
+    large = build_plan(RUSHES, MODES_BY_KEY["edit"], VARIANTS[0], EditRequest("edit", 1080, 1920), MUSIC)
+    assert small.shots == large.shots and small.seed == large.seed
+
+
+def test_encoder_choice_prefers_working_hardware_then_falls_back(monkeypatch):
+    from cutweave.media import encoders
+
+    probed = []
+    monkeypatch.setattr(encoders, "probe_encoder", lambda binary, name: probed.append(name) or name == "h264_amf")
+    available = {"h264_nvenc", "h264_amf", "libopenh264", "mpeg4"}
+    assert encoders.choose_encoder("ffmpeg", available, "fast") == "h264_amf"
+    assert probed == ["h264_nvenc", "h264_amf"]
+    assert encoders.choose_encoder("ffmpeg", {"libopenh264", "mpeg4"}, "fast") == "libopenh264"
+    assert encoders.choose_encoder("ffmpeg", {"libx264", "h264_amf"}, "final") == "libx264"
+    assert encoders.choose_encoder("ffmpeg", {"vp9"}, "fast") is None
+    assert "-pix_fmt" in encoders.encoder_args("h264_qsv", "draft", 540, 960)
+    assert encoders.tier_for(540, 960) == "draft" and encoders.tier_for(1080, 1920) == "good"
+    assert encoders.tier_for(160, 90, final=True) == "final"

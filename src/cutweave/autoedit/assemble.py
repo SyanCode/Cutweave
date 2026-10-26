@@ -26,8 +26,9 @@ from cutweave.assets.library import LOOKS_BY_KEY, tone
 from cutweave.autoedit.analysis import file_fingerprint
 from cutweave.autoedit.planner import FPS, EditPlan, Shot, shot_starts
 from cutweave.media.render import (
-    RenderError, _available_video_encoders, _run_ffmpeg, ffmpeg_path, select_video_encoder,
+    RenderError, _available_video_encoders, _run_ffmpeg, ffmpeg_path,
 )
+from cutweave.media.encoders import HARDWARE, choose_encoder, encoder_args, mark_unusable, tier_for
 
 LOGGER = logging.getLogger("cutweave.autoedit")
 SHOT_VERSION = "shot-v4"
@@ -71,14 +72,6 @@ def filter_names(graph: str) -> set[str]:
 
 def _even(value: float) -> int:
     return max(2, int(round(value / 2)) * 2)
-
-
-def _encoder_args(encoder: str, *, fast: bool) -> list[str]:
-    if encoder == "libx264":
-        return ["-preset", "ultrafast" if fast else "veryfast", "-crf", "16" if fast else "18"]
-    if encoder == "mpeg4":
-        return ["-q:v", "2"]
-    return ["-b:v", "24M" if fast else "12M"]
 
 
 def shot_video_filter(shot: Shot, width: int, height: int, fit: str) -> str:
@@ -151,8 +144,8 @@ def build_shot_command(shot: Shot, plan: EditPlan, destination: Path, *, has_aud
         binary, "-hide_banner", "-loglevel", "error", "-nostats", "-y",
         "-ss", f"{shot.source_start:.3f}", "-t", f"{read:.3f}", "-i", str(Path(shot.source).resolve()),
         "-filter_complex", graph, "-map", "[v]", "-map", "[a]",
-        "-c:v", encoder, *_encoder_args(encoder, fast=True), "-pix_fmt", "yuv420p", "-r", str(FPS),
-        "-c:a", "pcm_s16le", "-ar", "48000", "-ac", "2", str(destination),
+        "-c:v", encoder, *encoder_args(encoder, tier_for(plan.width, plan.height), plan.width, plan.height, FPS),
+        "-r", str(FPS), "-c:a", "pcm_s16le", "-ar", "48000", "-ac", "2", str(destination),
     ]
 
 
@@ -239,7 +232,7 @@ def build_assembly_command(plan: EditPlan, shot_files: Sequence[Path], destinati
     graph, video, audio = build_assembly_graph(plan)
     command.extend([
         "-filter_complex", graph, "-map", video, "-map", audio, "-c:v", encoder,
-        *_encoder_args(encoder, fast=False), "-pix_fmt", "yuv420p", "-r", str(FPS),
+        *encoder_args(encoder, tier_for(plan.width, plan.height), plan.width, plan.height, FPS), "-r", str(FPS),
         "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-movflags", "+faststart", str(destination),
     ])
     return command
@@ -272,7 +265,12 @@ def render_plan(
     binary = ffmpeg_path()
     if not binary:
         raise RenderError("FFmpeg est introuvable. Installez FFmpeg ou définissez CUTWEAVE_FFMPEG.")
-    encoder = select_video_encoder(_available_video_encoders(binary))
+    encoder = choose_encoder(binary, _available_video_encoders(binary), "fast")
+    if encoder is None:
+        raise RenderError("Aucun encodeur vidéo compatible n'est disponible dans cette installation de FFmpeg.")
+    LOGGER.info("Encodeur du montage : %s", encoder)
+    available_encoders = _available_video_encoders(binary)
+    state = {"encoder": encoder}
     absent = missing_filters(binary)
     if absent:
         raise RenderError(
@@ -293,16 +291,36 @@ def render_plan(
     lock = threading.Lock()
     stop = _AnyEvent(cancel_event)
 
+    def run_with_fallback(make_command, **kwargs) -> None:
+        """Exécute FFmpeg ; si un encodeur matériel échoue, bascule une fois sur l'encodeur suivant."""
+        while True:
+            current = state["encoder"]
+            try:
+                _run_ffmpeg(make_command(current), **kwargs)
+                return
+            except RenderError as exc:
+                event = kwargs.get("cancel_event")
+                cancelled = "annul" in str(exc).lower() or (event is not None and event.is_set())
+                if cancelled or current not in HARDWARE:
+                    raise
+                mark_unusable(binary, current)
+                alternative = choose_encoder(binary, available_encoders, "fast")
+                if alternative is None or alternative == current:
+                    raise
+                LOGGER.warning("Encodeur %s en échec (%s) ; bascule sur %s.", current, str(exc)[-200:], alternative)
+                state["encoder"] = alternative
+
     def render_shot(index: int) -> None:
         if stop.is_set():
             raise RenderError("Montage annulé.")
         shot, target = plan.shots[index], files[index]
         temporary = target.with_name(f".{target.stem}.{uuid.uuid4().hex}.part.mkv")
         try:
-            command = build_shot_command(shot, plan, temporary, has_audio=has_audio.get(shot.source, False),
-                                         encoder=encoder)
-            _run_ffmpeg(command, cwd=cache, duration_ms=round(shot.duration * 1000), on_progress=None,
-                        cancel_event=stop, cancel_message="Montage annulé.")
+            run_with_fallback(
+                lambda enc: build_shot_command(shot, plan, temporary, has_audio=has_audio.get(shot.source, False),
+                                               encoder=enc),
+                cwd=cache, duration_ms=round(shot.duration * 1000), on_progress=None,
+                cancel_event=stop, cancel_message="Montage annulé.")
             if not temporary.is_file() or temporary.stat().st_size == 0:
                 raise RenderError(f"Le plan {index + 1} n'a produit aucun fichier.")
             temporary.replace(target)
@@ -317,6 +335,8 @@ def render_plan(
     for index in pending:
         unique.setdefault(files[index], index)
     workers = max(1, min(4, (os.cpu_count() or 2) // 2 + 1))
+    if encoder in HARDWARE:
+        workers = min(workers, 2)  # le GPU est le goulot ; peu de sessions simultanées par carte
     with ThreadPoolExecutor(max_workers=workers) as pool:
         futures = [pool.submit(render_shot, index) for index in unique.values()]
         try:
@@ -328,12 +348,12 @@ def render_plan(
     report(shot_weight)
     temporary = output.with_name(f".{output.stem}.{uuid.uuid4().hex}.part.mp4")
     try:
-        command = build_assembly_command(plan, files, temporary, encoder=encoder)
         LOGGER.info("Assemblage de %d plans -> %s", len(files), output.name)
         duration_ms = round((shot_starts(plan.shots)[-1] + plan.shots[-1].duration) * 1000)
-        _run_ffmpeg(command, cwd=output.parent, duration_ms=duration_ms,
-                    on_progress=lambda f: report(shot_weight + (1 - shot_weight) * (f or 0)),
-                    cancel_event=cancel_event, cancel_message="Montage annulé.")
+        run_with_fallback(lambda enc: build_assembly_command(plan, files, temporary, encoder=enc),
+                          cwd=output.parent, duration_ms=duration_ms,
+                          on_progress=lambda f: report(shot_weight + (1 - shot_weight) * (f or 0)),
+                          cancel_event=cancel_event, cancel_message="Montage annulé.")
         if not temporary.is_file() or temporary.stat().st_size == 0:
             raise RenderError("L'assemblage n'a produit aucun fichier.")
         temporary.replace(output)

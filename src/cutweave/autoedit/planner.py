@@ -151,8 +151,9 @@ def timeline_duration(shots: Sequence[Shot]) -> float:
 
 
 def plan_seed(analyses: Sequence[RushAnalysis], request: EditRequest, variant: VariantProfile) -> int:
+    # La résolution n'entre pas dans la graine : l'aperçu rapide et l'export final sont le même montage.
     raw = "|".join([*(f"{a.name}:{a.duration:.3f}:{len(a.motion)}" for a in analyses), request.mode,
-                    variant.letter, f"{request.duration}", f"{request.width}x{request.height}"])
+                    variant.letter, f"{request.duration}", "x" if request.width > request.height else "y"])
     return int(hashlib.sha256(raw.encode("utf-8")).hexdigest()[:12], 16)
 
 

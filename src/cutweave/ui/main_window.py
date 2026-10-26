@@ -42,7 +42,7 @@ from cutweave.stages.finishing.music import (
 from cutweave.stages.finishing.caption_presets import (
     BUILTIN_CAPTION_PRESETS, BUILTIN_BY_NAME, CaptionPreset, CaptionPresetError,
 )
-from cutweave.autoedit.service import default_project_dir
+from cutweave.autoedit.service import default_project_dir, ensure_final, is_draft_montage
 from cutweave.ui.caption_preset_dialog import CaptionPresetDialog
 from cutweave.ui.library_page import LibraryPage
 from cutweave.ui.studio import StudioPage
@@ -2170,6 +2170,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Paramètres invalides", str(exc))
             return
         destination = None
+        needs_final = target_stage is None and is_draft_montage(self.store, item.id)
         if target_stage is None:
             destination, _ = QFileDialog.getSaveFileName(
                 self, "Exporter le rendu", str(self.store.root / "exports" / f"{item.path.stem}_cutweave.mp4"),
@@ -2188,12 +2189,21 @@ class MainWindow(QMainWindow):
         self.cancel_event = threading.Event()
         forced = ("visual", "composition", "finishing", "render") if force else ()
 
+        if needs_final:
+            self.release_media()  # Windows : le master est remplacé, il ne doit plus être ouvert par le lecteur
+
         def operation(progress, cancel_event):
-            return run_job(store, job, target_stage=target_stage, destination=destination,
+            current = job
+            if needs_final and ensure_final(store, item.id, on_progress=progress, cancel_event=cancel_event):
+                current = collect_job(store, next(m for m in store.list_media() if m.id == item.id))
+            return run_job(store, current, target_stage=target_stage, destination=destination,
                            cancel_event=cancel_event, on_progress=progress, force=forced)
 
         if target_stage is None:
-            success = lambda result: self._append_log(f"Pipeline terminé, export vérifié : {result}")
+            def success(result):
+                self._append_log(f"Pipeline terminé, export vérifié : {result}")
+                if needs_final:
+                    self.media_changed()
         else:
             success = lambda result: self._append_log(f"{STAGE_LABELS[target_stage]} terminée : {result}")
         self._run_task(operation, success)
@@ -2467,6 +2477,12 @@ class MainWindow(QMainWindow):
 
     def run_task(self, operation, on_success):
         self._run_task(operation, on_success)
+
+    def release_media(self):
+        """Libère les fichiers vidéo ouverts par les lecteurs (nécessaire avant de les remplacer sous Windows)."""
+        for player in (self.player, self.studio.player):
+            player.stop()
+            player.setSource(QUrl())
 
     def notify(self, message: str):
         self._append_log(message)
