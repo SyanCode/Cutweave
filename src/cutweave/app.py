@@ -25,6 +25,18 @@ def _install_excepthook() -> None:
     sys.excepthook = hook
 
 
+def _set_windows_app_id() -> None:
+    """Sous Windows, sans identifiant propre la barre des tâches regroupe la fenêtre sous l'icône de Python."""
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("CUTWEAVE.Cutweave.App")
+    except (AttributeError, OSError):
+        pass
+
+
 def main() -> int:
     settings = AppSettings.load()
     settings.apply()
@@ -34,6 +46,7 @@ def main() -> int:
         log_file = None
     LOGGER.info("CUTWEAVE %s démarré (journal : %s)", __version__, log_file)
     _install_excepthook()
+    _set_windows_app_id()
     app = QApplication(sys.argv)
     app.setApplicationName("CUTWEAVE")
     app.setApplicationVersion(__version__)
