@@ -85,3 +85,47 @@ def test_full_pipeline_and_single_stage_from_ui(window, tmp_path, monkeypatch):
 
     main.close_project()
     assert main.store is None
+
+
+def test_studio_is_the_home_page(window):
+    _app, main, errors = window
+    assert main.pages.currentWidget() is main.studio
+    assert main.sidebar.item(0).text().strip().endswith("Studio")
+    assert not main.studio.generate_button.isEnabled()
+    assert len(main.studio.mode_cards) == 6
+    assert errors == []
+
+
+@needs_ffmpeg
+def test_studio_drop_generate_and_refine(window, tmp_path, monkeypatch):
+    app, main, errors = window
+    from dataclasses import replace
+
+    from cutweave.ui.studio import StudioPage
+
+    main.app_settings.projects_dir = str(tmp_path / "projects")
+    clips = tmp_path / "clips"
+    clips.mkdir()
+    for index, size in enumerate(("320x180", "180x320")):
+        subprocess.run([ffmpeg_path(), "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i",
+                        f"testsrc2=size={size}:rate=25:duration=4", "-c:v", "mpeg4", str(clips / f"r{index}.mp4")],
+                       check=True, capture_output=True)
+    main.studio.add_paths([str(clips)])
+    _wait(app, main)
+    assert main.store is not None and main.store.root.parent == tmp_path / "projects"
+    assert main.studio.rush_list.count() == 2 and main.studio.generate_button.isEnabled()
+
+    original = StudioPage.build_request
+    monkeypatch.setattr(StudioPage, "build_request",
+                        lambda self: replace(original(self), quality=120, variants=1, duration=6.0))
+    main.studio._select_mode("highlights")
+    main.studio.generate()
+    assert main.studio.pages.currentIndex() == 1
+    _wait(app, main, timeout=180)
+    assert errors == []
+    assert main.studio.pages.currentIndex() == 2 and main.studio.current is not None
+    assert main.studio.current.key == "highlights_A"
+    main.studio.refine_current()
+    app.processEvents()
+    assert main.pages.currentIndex() == 1
+    assert main._selected_media().name == "highlights_A.mp4"

@@ -11,6 +11,15 @@ Elle applique à des rushs une chaîne de traitement en trois étapes — visuel
 
 ---
 
+## En bref : le Studio
+
+1. **Dépose tes rushs** (fichiers ou dossiers entiers) dans le Studio — un projet est créé automatiquement.
+2. **Choisis un style** : Edit, Vlog, Cinématique, Highlights, Souvenirs ou Face cam.
+3. **Clique sur « Générer »** : CUTWEAVE analyse les rushs, compose le montage et propose jusqu'à **3 variantes** (Signature, Énergique, Posée) avec musique, effets sonores, étalonnage et titres.
+4. **Exporte** ta préférée, ou **peaufine-la** dans l'éditeur : tout reste modifiable (titres, musique, volumes, ducking, SFX, cadrage, masques, B-roll…).
+
+---
+
 ## Prérequis
 
 - Windows 10 ou 11 (x86-64).
@@ -57,8 +66,44 @@ cutweave-cli purge-cache D:\Projets\Demo
 
 Codes de retour : 0 succès, 1 échec de traitement, 2 configuration invalide (média manquant, masque hors cadre…), 130 annulation (Ctrl+C).
 
+## Studio — montage automatique
+
+Le Studio est l'écran d'accueil. Il enchaîne quatre traitements déterministes :
+
+1. **Analyse des rushs** (traitement du signal classique, résultats en cache) : mouvement (différence entre images), luminosité, netteté (variance du laplacien), niveau sonore (RMS), changements de plan (pics de différence) et zones d'activité sonore (seuil adaptatif au-dessus du bruit de fond — aucune reconnaissance vocale).
+2. **Plan de montage** selon le style choisi :
+
+| Style | Règles principales |
+|---|---|
+| **Edit** | Coupes calées sur le tempo de la musique, meilleurs moments (mouvement + netteté), zooms punch, flashs et glissés, look Punchy. |
+| **Vlog** | Garde la voix et retire les blancs (jump cuts), plans d'illustration sous la musique pour les rushs sans voix, musique douce avec ducking pendant la parole. |
+| **Cinématique** | Plans longs au ralenti (×0,8), push-in et panoramiques, fondus, bandes 2.39:1 en 16:9, étalonnage Teal & Orange / Film. |
+| **Highlights** | Moments les plus intenses (mouvement + son), montée en puissance jusqu'au meilleur plan, flashs et impacts. |
+| **Souvenirs** | Récap chronologique réparti sur tous les rushs, fondus et glissés, tons chauds / vintage. |
+| **Face cam** | Silences retirés, zoom alterné à chaque coupe pour masquer les jump cuts, musique discrète. |
+
+   Les variantes changent le rythme (Énergique : plans plus courts, accroche en ouverture ; Posée : plans plus longs, ordre chronologique), la musique et le look. Une graine dérivée des rushs et des réglages rend chaque variante reproductible.
+3. **Assemblage FFmpeg** : chaque plan est recadré (remplir le cadre ou fond flou), animé, normalisé à 30 i/s et mis en cache (réutilisé d'une variante à l'autre, rendu en parallèle) ; les plans sont enchaînés par coupes ou transitions `xfade`/`acrossfade`, puis le look, les bandes et les fondus sont appliqués.
+4. **Finition éditable** : le master devient un média du projet configuré avec le preset de titre, la musique (en boucle, calée sur le premier temps, avec ducking), les SFX et la netteté, puis l'aperçu est rendu par le pipeline standard. L'export final réutilise ce rendu en cache tant que rien n'a changé.
+
+Réglages facultatifs : format (9:16, 16:9, 1:1), durée, musique (intégrée, la tienne — tempo détecté automatiquement par autocorrélation du flux spectral — ou aucune), look, cadrage, nombre de variantes, titre d'ouverture, texte de fin, qualité (1080p / 720p rapide).
+
+En ligne de commande : `cutweave-cli auto D:\Projets\Demo D:\Rushs --mode vlog --aspect 16:9 --variants 3`.
+
+## Bibliothèque d'actifs intégrés
+
+Tous les actifs sont **synthétisés localement** au premier usage (numpy : oscillateurs, bruit à graine fixe, enveloppes, filtres et réverbération par convolution) dans `%APPDATA%\CUTWEAVE\assets\v1` — aucun téléchargement, libres de droits.
+
+- **6 musiques en boucle** au tempo connu (cuts exactement sur le temps) : Pulse (électro 124 BPM), Overdrive (énergie 140), Sunday (lo-fi 84), Horizon (cinématique 70), Daylight (pop 112), Nocturne (ambiance 90).
+- **11 effets sonores** : whoosh, swipe, whoosh sortant, impact, boom, riser, pop, clic, ding, déclencheur photo, glitch.
+- **8 looks** (filtres FFmpeg) : Naturel, Punchy, Chaud, Froid, Teal & Orange, Vintage, Film, Noir & blanc.
+- **7 styles de titres** : Clean, Dynamic, Cinematic, Impact, Vlog, Néon, Souvenir.
+
+La page **Bibliothèque** permet d'écouter chaque son et de l'ajouter au projet (onglet *Musique & SFX* de l'éditeur).
+
 ## Interface
 
+- **Studio** (accueil), **Éditeur** (réglages détaillés par étape), **Bibliothèque**, historique, journaux et paramètres dans la barre latérale ; thème sombre unifié. Les traitements s'affichent dans la barre de progression du bas (bouton *Annuler*, panneau *Journal* repliable).
 - **Barre latérale** : nouveau/ouvrir un projet, import, accès direct à chaque éditeur, historique des tâches, journaux, paramètres.
 - **Médias** : import de fichiers ou d'un dossier (récursif), tableau nom / durée / résolution / images/s / audio ; les fichiers introuvables sont marqués `[manquant]` (menu *Projet > Relier les médias manquants* pour les retrouver par nom dans un dossier).
 - **Aperçu** : lecture, pause, déplacement dans le temps (lecteur Qt Multimedia).
@@ -110,7 +155,7 @@ Un projet est un dossier contenant `project.json`, la base `cutweave.sqlite3`, `
 python -m pytest
 ```
 
-138 tests : modèles et validation, parsing de captions, presets, cache, orchestrateur, règles, tracking sur vidéo synthétique, rendus FFmpeg réels (cadrage, netteté, captions, masques, B-roll, musique, ducking, SFX), pipeline complet bout-en-bout depuis un projet, annulation, CLI, et démarrage de l'interface en mode hors écran (`QT_QPA_PLATFORM=offscreen`). Les médias de test sont générés à la volée (`lavfi`) ; les tests FFmpeg sont ignorés si FFmpeg est absent.
+157 tests : modèles et validation, parsing de captions, montage automatique (analyse, tempo, plans déterministes de chaque style, variantes et export de bout en bout), actifs synthétisés, presets, cache, orchestrateur, règles, tracking sur vidéo synthétique, rendus FFmpeg réels (cadrage, netteté, captions, masques, B-roll, musique, ducking, SFX), pipeline complet bout-en-bout depuis un projet, annulation, CLI, et démarrage de l'interface en mode hors écran (`QT_QPA_PLATFORM=offscreen`). Les médias de test sont générés à la volée (`lavfi`) ; les tests FFmpeg sont ignorés si FFmpeg est absent.
 
 ## Construction d'un exécutable Windows
 
@@ -123,7 +168,8 @@ Le script produit `dist\CUTWEAVE\CUTWEAVE.exe` (interface) et `dist\CUTWEAVE\cut
 
 ## Limites connues
 
-- Une timeline = **un rush principal** par rendu, enrichi de B-roll, masques, captions et audio ; pas de concaténation de plusieurs rushs ni de transitions (les événements « transition » et « changement de preset » ne sont donc pas proposés).
+- Dans l'éditeur, une timeline = **un média principal** par rendu, enrichi de B-roll, masques, captions et audio. L'assemblage de plusieurs rushs avec transitions est fait par le Studio, qui produit un master ensuite éditable comme n'importe quel média (le découpage du master lui-même n'est pas modifiable plan par plan dans l'éditeur : régénérez une variante pour changer la sélection).
+- Le Studio ne « comprend » pas les images : il choisit les extraits selon des mesures de pixels et de niveau sonore. Un plan net et animé mais sans intérêt peut être retenu ; le cadrage « Remplir » reste centré.
 - L'aperçu vidéo lit le rush d'origine ; masques et captions sont visibles dans les rendus (étape seule ou export), pas en direct dans le lecteur. La comparaison avant/après au curseur concerne la netteté.
 - B-roll : couverture plein cadre uniquement, sans audio propre.
 - Mise en évidence : le mode `cue` colore toute la caption (pas de synchronisation mot à mot).

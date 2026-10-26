@@ -17,7 +17,8 @@ from PySide6.QtWidgets import (
     QComboBox, QFileDialog, QFormLayout, QHBoxLayout, QLabel, QMainWindow, QDialog,
     QMessageBox, QProgressBar, QPushButton, QSpinBox, QDoubleSpinBox, QInputDialog,
     QSlider, QSplitter, QStatusBar, QTableWidget, QTableWidgetItem, QTabWidget, QTextEdit, QRubberBand,
-    QVBoxLayout, QWidget, QListWidget, QListWidgetItem, QLineEdit, QCheckBox,
+    QVBoxLayout, QWidget, QListWidget, QListWidgetItem, QLineEdit, QCheckBox, QApplication, QFrame,
+    QStackedWidget,
 )
 
 from cutweave.media.files import collect_video_files
@@ -41,7 +42,11 @@ from cutweave.stages.finishing.music import (
 from cutweave.stages.finishing.caption_presets import (
     BUILTIN_CAPTION_PRESETS, BUILTIN_BY_NAME, CaptionPreset, CaptionPresetError,
 )
+from cutweave.autoedit.service import default_project_dir
 from cutweave.ui.caption_preset_dialog import CaptionPresetDialog
+from cutweave.ui.library_page import LibraryPage
+from cutweave.ui.studio import StudioPage
+from cutweave.ui.theme import apply_theme
 from cutweave.ui.dialogs import PipelinePanel, SettingsDialog, TaskHistoryDialog
 from cutweave.ui.rules_panel import RulesPanel
 from cutweave.stages.composition.masking import MaskKeyframe, MaskRegion, MaskValidationError
@@ -174,48 +179,42 @@ class MainWindow(QMainWindow):
         self.log_bridge.message.connect(self._append_log)
         self._log_handler = QtLogHandler(self.log_bridge)
         logging.getLogger("cutweave").addHandler(self._log_handler)
-        self.setWindowTitle("CUTWEAVE — Montage vidéo local")
-        self.resize(1440, 900)
+        self.setWindowTitle("CUTWEAVE — Montage vidéo automatique")
+        self.resize(1480, 940)
+        self.setMinimumSize(1100, 720)
+        if QApplication.instance() is not None:
+            apply_theme(QApplication.instance())
         self._build_ui()
         self._build_menu()
         self._set_project_state(False)
 
     def _build_ui(self):
-        self.setStyleSheet("""
-            QMainWindow, QWidget { background: #111318; color: #e7e9ef; font-size: 10pt; }
-            QTableWidget, QTextEdit, QListWidget { background: #191c23; border: 1px solid #303541; gridline-color: #303541; }
-            QPushButton, QComboBox, QSpinBox, QDoubleSpinBox, QLineEdit { background: #232833; border: 1px solid #3a4150; padding: 6px; border-radius: 5px; }
-            QPushButton:hover { background: #303849; }
-            QPushButton:disabled { color: #737987; }
-            QHeaderView::section { background: #20242d; padding: 6px; border: 0; }
-            QTabWidget::pane { border: 1px solid #303541; border-radius: 6px; }
-            QTabBar::tab { background: #191c23; padding: 7px 12px; border: 1px solid #303541; border-bottom: 0; }
-            QTabBar::tab:selected { background: #2a3140; color: #ffffff; }
-            QGroupBox { border: 1px solid #303541; border-radius: 6px; margin-top: 12px; padding-top: 8px; }
-            QGroupBox::title { subcontrol-origin: margin; left: 8px; padding: 0 4px; color: #9aa4b8; }
-            QProgressBar { background: #191c23; border: 1px solid #303541; border-radius: 5px; text-align: center; height: 18px; }
-            QProgressBar::chunk { background: #4c7dff; border-radius: 5px; }
-            QListWidget#sidebar { background: #0b0d11; border: 0; border-right: 1px solid #262b35; padding-top: 10px; }
-            QListWidget#sidebar::item { padding: 10px 14px; border-radius: 6px; margin: 2px 8px; }
-            QListWidget#sidebar::item:selected { background: #2a3140; color: #ffffff; }
-            QListWidget#sidebar::item:hover { background: #1b2029; }
-        """)
         root = QWidget()
+        root.setObjectName("appRoot")
         outer = QHBoxLayout(root)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
-        self.sidebar = QListWidget()
-        self.sidebar.setObjectName("sidebar")
-        self.sidebar.setFixedWidth(220)
-        self.sidebar.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.sidebar.setTextElideMode(Qt.TextElideMode.ElideRight)
-        outer.addWidget(self.sidebar)
+        self.sidebar_frame = QFrame()
+        self.sidebar_frame.setObjectName("sidebar")
+        self.sidebar_frame.setFixedWidth(232)
+        outer.addWidget(self.sidebar_frame)
+        main_column = QVBoxLayout()
+        main_column.setContentsMargins(0, 0, 0, 0)
+        main_column.setSpacing(0)
+        outer.addLayout(main_column, 1)
+        self.pages = QStackedWidget()
+        self.pages.setObjectName("pages")
+        main_column.addWidget(self.pages, 1)
+        self.studio = StudioPage(self)
+        self.pages.addWidget(self.studio)
         content = QWidget()
-        outer.addWidget(content, 1)
+        content.setObjectName("page")
+        self.pages.addWidget(content)
         layout = QVBoxLayout(content)
+        layout.setContentsMargins(20, 14, 20, 10)
         header = QHBoxLayout()
         self.project_label = QLabel("Aucun projet ouvert")
-        self.project_label.setStyleSheet("font-size: 16pt; font-weight: 600; padding: 8px;")
+        self.project_label.setProperty("role", "h2")
         header.addWidget(self.project_label, 1)
         self.import_button = QPushButton("Importer des médias…")
         self.import_button.clicked.connect(self.import_media)
@@ -274,7 +273,7 @@ class MainWindow(QMainWindow):
         right_layout.addWidget(QLabel("Aperçu"))
         self.video_widget = QVideoWidget()
         self.video_widget.setMinimumSize(400, 260)
-        self.video_widget.setStyleSheet("background: #050608; border: 1px solid #303541;")
+        self.video_widget.setStyleSheet("background: #050608;")
         right_layout.addWidget(self.video_widget, 1)
         player_row = QHBoxLayout()
         self.player = QMediaPlayer(self)
@@ -581,76 +580,137 @@ class MainWindow(QMainWindow):
         self.sfx_table.itemSelectionChanged.connect(self._sfx_selection_changed)
         self.sfx_table.cellChanged.connect(self._sfx_cell_changed)
         audio_layout.addWidget(self.sfx_table, 1)
-        editor_tabs.addTab(audio_page, "Musique & SFX")
+        editor_tabs.addTab(audio_page, "Musique && SFX")
         self.rules_panel = RulesPanel(
             lambda: self.store, self._selected_media, self.player.position,
             self._seek_to, self._append_log,
         )
-        editor_tabs.addTab(self.rules_panel, "Règles & marqueurs")
+        editor_tabs.addTab(self.rules_panel, "Règles && marqueurs")
         self.pipeline_panel = PipelinePanel(
             lambda: self.store, self._selected_media, self._run_pipeline_from_panel, self._append_log,
         )
         editor_tabs.addTab(self.pipeline_panel, "Pipeline")
         right_layout.addWidget(editor_tabs, 1)
-        self.cancel_button = QPushButton("Annuler le traitement")
-        self.cancel_button.clicked.connect(self.cancel_task)
-        right_layout.addWidget(self.cancel_button)
         splitter.addWidget(right)
         splitter.setSizes([560, 620])
         layout.addWidget(splitter, 1)
+        self.library_page = LibraryPage(self)
+        self.pages.addWidget(self.library_page)
 
-        progress_row = QHBoxLayout()
+        self.log_view = QTextEdit()
+        self.log_view.setReadOnly(True)
+        self.log_view.setMaximumHeight(140)
+        self.log_view.setPlaceholderText("Les opérations et les erreurs apparaîtront ici.")
+        self.log_view.setVisible(False)
+        main_column.addWidget(self.log_view)
+        bottom = QFrame()
+        bottom.setObjectName("bottomBar")
+        progress_row = QHBoxLayout(bottom)
+        progress_row.setContentsMargins(16, 7, 12, 7)
         self.stage_label = QLabel("Prêt")
-        self.stage_label.setMinimumWidth(260)
+        self.stage_label.setProperty("role", "muted")
+        self.stage_label.setMinimumWidth(300)
         progress_row.addWidget(self.stage_label)
         self.progress = QProgressBar()
         self.progress.setRange(0, 100)
         self.progress.setValue(0)
+        self.progress.setTextVisible(False)
         progress_row.addWidget(self.progress, 1)
-        layout.addLayout(progress_row)
-        self.log_view = QTextEdit()
-        self.log_view.setReadOnly(True)
-        self.log_view.setMaximumHeight(110)
-        self.log_view.setPlaceholderText("Les opérations et les erreurs apparaîtront ici.")
-        layout.addWidget(self.log_view)
+        self.cancel_button = QPushButton("Annuler")
+        self.cancel_button.setProperty("variant", "danger")
+        self.cancel_button.clicked.connect(self.cancel_task)
+        progress_row.addWidget(self.cancel_button)
+        self.log_toggle = QPushButton("Journal")
+        self.log_toggle.setProperty("variant", "ghost")
+        self.log_toggle.setCheckable(True)
+        self.log_toggle.toggled.connect(self.log_view.setVisible)
+        progress_row.addWidget(self.log_toggle)
+        main_column.addWidget(bottom)
         self.setCentralWidget(root)
         self.setStatusBar(QStatusBar())
         self._build_sidebar()
         self._set_task_state(False)
 
     def _build_sidebar(self):
-        tabs = {self.editor_tabs.tabText(index): index for index in range(self.editor_tabs.count())}
+        tabs = {self.editor_tabs.tabText(index).replace("&&", "&"): index for index in range(self.editor_tabs.count())}
+        layout = QVBoxLayout(self.sidebar_frame)
+        layout.setContentsMargins(0, 18, 0, 14)
+        layout.setSpacing(6)
+        brand = QLabel("CUTWEAVE")
+        brand.setStyleSheet("font-size: 15pt; font-weight: 800; padding-left: 22px; color: #ffffff;")
+        layout.addWidget(brand)
+        tagline = QLabel("Montage automatique local")
+        tagline.setProperty("role", "faint")
+        tagline.setStyleSheet("padding-left: 22px; padding-bottom: 10px;")
+        layout.addWidget(tagline)
+
+        def editor_tab(name):
+            return lambda: (self.pages.setCurrentIndex(1), self.editor_tabs.setCurrentIndex(tabs[name]))
+
         self._sidebar_actions = [
-            ("Nouveau projet", self.new_project),
-            ("Ouvrir un projet", self.open_project),
-            ("Importer des médias", self.import_media),
-            ("Visuel", lambda: self.editor_tabs.setCurrentIndex(tabs["Visuel"])),
-            ("Masques", lambda: self.editor_tabs.setCurrentIndex(tabs["Masques"])),
-            ("B-roll", lambda: self.editor_tabs.setCurrentIndex(tabs["B-roll"])),
-            ("Presets captions", lambda: self.editor_tabs.setCurrentIndex(tabs["Presets captions"])),
-            ("Musique & SFX", lambda: self.editor_tabs.setCurrentIndex(tabs["Musique & SFX"])),
-            ("Règles & marqueurs", lambda: self.editor_tabs.setCurrentIndex(tabs["Règles & marqueurs"])),
-            ("Pipeline", lambda: self.editor_tabs.setCurrentIndex(tabs["Pipeline"])),
-            ("Historique des tâches", self.show_task_history),
-            ("Journaux", self.open_log_folder),
-            ("Paramètres", self.show_settings),
+            ("✦   Studio", lambda: self.pages.setCurrentIndex(0)),
+            ("✎   Éditeur", lambda: self.pages.setCurrentIndex(1)),
+            ("      Visuel", editor_tab("Visuel")),
+            ("      Captions", editor_tab("Presets captions")),
+            ("      Masques", editor_tab("Masques")),
+            ("      B-roll", editor_tab("B-roll")),
+            ("      Musique & SFX", editor_tab("Musique & SFX")),
+            ("      Règles & marqueurs", editor_tab("Règles & marqueurs")),
+            ("      Pipeline", editor_tab("Pipeline")),
+            ("♫   Bibliothèque", lambda: (self.pages.setCurrentIndex(2), self.library_page.refresh())),
+            ("⏱   Historique", self.show_task_history),
+            ("☰   Journaux", self.open_log_folder),
+            ("⚙   Paramètres", self.show_settings),
         ]
-        brand = QListWidgetItem("CUTWEAVE")
-        brand.setFlags(Qt.ItemFlag.NoItemFlags)
-        brand.setForeground(Qt.GlobalColor.white)
-        font = brand.font()
-        font.setBold(True)
-        font.setPointSize(13)
-        brand.setFont(font)
-        self.sidebar.addItem(brand)
+        self.sidebar = QListWidget()
+        self.sidebar.setObjectName("nav")
+        self.sidebar.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.sidebar.setTextElideMode(Qt.TextElideMode.ElideRight)
         for label, _action in self._sidebar_actions:
             self.sidebar.addItem(QListWidgetItem(label))
         self.sidebar.itemClicked.connect(self._sidebar_clicked)
+        self.sidebar.setCurrentRow(0)
+        layout.addWidget(self.sidebar, 1)
+        self.pages.currentChanged.connect(self._page_changed)
+
+        project_box = QFrame()
+        project_box.setProperty("card", "true")
+        box = QVBoxLayout(project_box)
+        box.setContentsMargins(12, 10, 12, 10)
+        box.setSpacing(6)
+        caption = QLabel("PROJET")
+        caption.setProperty("role", "step")
+        box.addWidget(caption)
+        self.sidebar_project = QLabel("Aucun projet")
+        self.sidebar_project.setWordWrap(True)
+        box.addWidget(self.sidebar_project)
+        buttons = QHBoxLayout()
+        new_button = QPushButton("Nouveau")
+        new_button.clicked.connect(self.new_project)
+        open_button = QPushButton("Ouvrir…")
+        open_button.clicked.connect(self.open_project)
+        buttons.addWidget(new_button)
+        buttons.addWidget(open_button)
+        box.addLayout(buttons)
+        wrapper = QHBoxLayout()
+        wrapper.setContentsMargins(12, 0, 12, 0)
+        wrapper.addWidget(project_box)
+        layout.addLayout(wrapper)
 
     def _sidebar_clicked(self, item):
-        row = self.sidebar.row(item) - 1
+        row = self.sidebar.row(item)
         if 0 <= row < len(self._sidebar_actions):
             self._sidebar_actions[row][1]()
+
+    def _page_changed(self, index: int):
+        if index != 0:
+            self.studio.player.pause()
+        if index != 1:
+            self.player.pause()
+        row = {0: 0, 1: 1, 2: 9}.get(index)
+        current = self.sidebar.currentRow()
+        if row is not None and not (index == 1 and 1 <= current <= 8):
+            self.sidebar.setCurrentRow(row)
 
     def _build_menu(self):
         project_menu = self.menuBar().addMenu("Projet")
@@ -719,6 +779,7 @@ class MainWindow(QMainWindow):
 
     def _set_task_state(self, active: bool):
         self.cancel_button.setEnabled(active)
+        self.cancel_button.setVisible(active)
         self.progress.setRange(0, 0 if active else 100)
         if not active:
             self.progress.setValue(0)
@@ -771,6 +832,8 @@ class MainWindow(QMainWindow):
         self.mask_from_track_button.setEnabled(self.store is not None and bool(self.media) and not active)
         self.rules_panel.set_active(self.store is not None and not active)
         self.pipeline_panel.set_busy(active)
+        self.studio.set_busy(active)
+        self.library_page.refresh()
         if not active:
             self.stage_label.setText("Prêt")
             self.pipeline_panel.refresh()
@@ -816,7 +879,10 @@ class MainWindow(QMainWindow):
         self.player.setSource(QUrl())
         self.store = store
         self.media = store.list_media()
-        self.project_label.setText(f"{store.manifest['name']}  ·  {store.root}")
+        self.project_label.setText(store.manifest["name"])
+        self.project_label.setToolTip(str(store.root))
+        self.sidebar_project.setText(store.manifest["name"])
+        self.sidebar_project.setToolTip(str(store.root))
         self._populate_table()
         self._populate_captions()
         self._populate_masks()
@@ -835,6 +901,9 @@ class MainWindow(QMainWindow):
             self._append_log(f"{len(missing)} média(s) introuvable(s) : {', '.join(missing[:5])}. "
                              "Utilisez Projet > Relier les médias manquants.")
         self._append_log(f"Projet ouvert : {store.root}")
+        self.studio.refresh()
+        self.studio.show_results_if_any()
+        self.pages.setCurrentIndex(0)
 
     def import_media(self):
         if not self.store:
@@ -882,7 +951,15 @@ class MainWindow(QMainWindow):
                 progress(f"Analyse : {Path(path).name}")
                 try:
                     info = probe_media(path, cancel_event=cancel_event)
-                    imported.append(store.add_media(path, info))
+                    media = store.add_media(path, info)
+                    imported.append(media)
+                    try:
+                        create_video_thumbnail(
+                            path, store.cache_root / "thumbnails" / f"rush-{media.id}.jpg",
+                            time_ms=round(min(info.duration * 0.3, 5.0) * 1000), width=288, height=162,
+                            cancel_event=cancel_event)
+                    except ThumbnailError as exc:
+                        LOGGER.warning("Miniature impossible pour %s : %s", Path(path).name, exc)
                 except MediaProbeError as exc:
                     if cancel_event.is_set():
                         cancelled = True
@@ -902,6 +979,7 @@ class MainWindow(QMainWindow):
         self._populate_broll_placements()
         self._load_music_mix_to_ui()
         self._populate_sfx_placements()
+        self.studio.refresh()
         state = "interrompu" if cancelled else "terminé"
         self._append_log(f"Import {state} : {len(imported)} média(s) analysé(s), {len(errors)} erreur(s).")
         for error in errors:
@@ -2124,6 +2202,15 @@ class MainWindow(QMainWindow):
         self.export_selected(target_stage=target_stage, force=self.pipeline_panel.force_check.isChecked())
 
     def _on_progress(self, event):
+        if self.studio.handle_progress(event):
+            if event.fraction is not None:
+                if self.progress.maximum() == 0:
+                    self.progress.setRange(0, 100)
+                self.progress.setValue(round(event.fraction * 100))
+            if event.message:
+                self.stage_label.setText(f"Montage auto — {event.message}")
+                self._append_log(event.message)
+            return
         if isinstance(event, ProgressEvent):
             label = STAGE_LABELS.get(event.stage, event.stage)
             if event.fraction is not None:
@@ -2183,6 +2270,10 @@ class MainWindow(QMainWindow):
         self.store = None
         self.media = []
         self.project_label.setText("Aucun projet ouvert")
+        self.sidebar_project.setText("Aucun projet")
+        self.studio.stop_media()
+        self.studio.refresh()
+        self.studio.pages.setCurrentIndex(0)
         self._populate_table()
         self._populate_captions()
         self._populate_masks()
@@ -2372,6 +2463,64 @@ class MainWindow(QMainWindow):
                                 f"pertes de suivi ({summary['lost']}). Suivi d'une zone choisie, sans reconnaissance."))
         dialog.exec()
 
+    # --- API utilisée par le Studio et la bibliothèque ------------------------------------------
+
+    def run_task(self, operation, on_success):
+        self._run_task(operation, on_success)
+
+    def notify(self, message: str):
+        self._append_log(message)
+        self.statusBar().showMessage(message, 9000)
+
+    def ensure_project(self) -> bool:
+        """Crée automatiquement un projet dans le dossier des projets si aucun n'est ouvert."""
+        if self.store is not None:
+            return True
+        target = default_project_dir(self.app_settings.projects_dir)
+        try:
+            store = ProjectStore.create(target, name=target.name)
+        except Exception as exc:
+            QMessageBox.critical(self, "Création du projet impossible",
+                                 f"{exc}\n\nChoisissez un dossier de projets dans Paramètres.")
+            return False
+        self._load_project(store)
+        self.notify(f"Projet créé automatiquement : {target}")
+        return True
+
+    def import_paths(self, paths):
+        if self.thread is not None:
+            QMessageBox.information(self, "Traitement en cours", "Attendez la fin du traitement en cours.")
+            return
+        if self.ensure_project():
+            self._start_import(paths)
+
+    def media_changed(self):
+        """Recharge les vues après une modification du projet faite hors de l'éditeur."""
+        if not self.store:
+            return
+        selected = self._selected_media()
+        self.media = self.store.list_media()
+        self._populate_table()
+        self._populate_audio_assets()
+        if selected:
+            self._select_media_id(selected.id)
+        self._selection_changed()
+        self.studio.refresh()
+
+    def _select_media_id(self, media_id: int) -> bool:
+        for row, item in enumerate(self.media):
+            if item.id == media_id:
+                self.table.selectRow(row)
+                return True
+        return False
+
+    def open_in_editor(self, media_id: int):
+        self.media = self.store.list_media() if self.store else []
+        self._populate_table()
+        if self._select_media_id(media_id):
+            self.pages.setCurrentIndex(1)
+            self.notify("Variante ouverte dans l'éditeur : modifie ce que tu veux puis relance le pipeline complet.")
+
     def cancel_task(self):
         if self.cancel_event:
             self.cancel_event.set()
@@ -2417,6 +2566,7 @@ class MainWindow(QMainWindow):
         self.cancel_event = None
         self._success_handler = None
         self._set_task_state(False)
+        self.studio.task_finished()
         if self._pending_frame is not None:
             QTimer.singleShot(0, self._show_tracking_roi)
 
@@ -2428,5 +2578,7 @@ class MainWindow(QMainWindow):
             self.thread.wait(35000)
         self.player.stop()
         self.player.setSource(QUrl())
+        self.studio.stop_media()
+        self.library_page.stop_media()
         logging.getLogger("cutweave").removeHandler(self._log_handler)
         event.accept()

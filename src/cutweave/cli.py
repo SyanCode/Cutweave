@@ -7,6 +7,7 @@ Exemples ::
     cutweave-cli render D:\\Projets\\demo --media rush01.mp4 --output D:\\exports\\rush01.mp4
     cutweave-cli render D:\\Projets\\demo --media rush01.mp4 --stage visual
     cutweave-cli purge-cache D:\\Projets\\demo
+    cutweave-cli auto D:\\Projets\\demo D:\\Rushs\\Vacances --mode vlog --aspect 16:9 --variants 3
 """
 
 from __future__ import annotations
@@ -90,6 +91,52 @@ def _render(args) -> int:
     return 0
 
 
+def _auto(args) -> int:
+    from pathlib import Path
+
+    from cutweave.autoedit.service import StudioError, StudioRequest, generate_variants, rush_media
+    from cutweave.media.files import collect_video_files
+    from cutweave.media.probe import MediaProbeError, probe_media
+
+    root = Path(args.project).expanduser()
+    store = ProjectStore(root) if (root / "project.json").is_file() else ProjectStore.create(root)
+    for path in collect_video_files(args.rushes) if args.rushes else ():
+        try:
+            store.add_media(path, probe_media(path))
+        except MediaProbeError as exc:
+            print(f"Ignoré : {exc}", file=sys.stderr)
+    rushes = tuple(str(media.path) for media in rush_media(store) if not media.missing)
+    request = StudioRequest(rushes, args.mode, args.aspect, args.quality, args.duration, args.music, args.look,
+                            args.fit, args.title, args.outro, args.variants)
+    cancel = threading.Event()
+    last = [-1]
+
+    def progress(event):
+        decile = int((event.fraction or 0) * 20)
+        if event.message:
+            print(f"[{decile * 5:3d} %] {event.message}", flush=True)
+        elif decile != last[0]:
+            last[0] = decile
+            print(f"[{decile * 5:3d} %]", flush=True)
+
+    try:
+        results = generate_variants(store, request, on_progress=progress, cancel_event=cancel)
+    except KeyboardInterrupt:
+        cancel.set()
+        print("Annulé.", file=sys.stderr)
+        return 130
+    except (StudioError, ValueError) as exc:
+        print(f"Configuration invalide : {exc}", file=sys.stderr)
+        return 2
+    except Exception as exc:
+        print(f"Échec : {exc}", file=sys.stderr)
+        return 1
+    for result in results:
+        print(f"Variante {result.letter} ({result.name}) : {result.preview}  [{result.duration:.1f} s, "
+              f"{result.shots} plans, {result.music_title}, {result.look_title}]")
+    return 0
+
+
 def _purge(args) -> int:
     store = ProjectStore(args.project)
     removed = StageCache(store.cache_root).purge()
@@ -120,6 +167,23 @@ def main(argv=None) -> int:
     purge = commands.add_parser("purge-cache", help="Supprime le cache de rendu et de tracking du projet.")
     purge.add_argument("project")
     purge.set_defaults(func=_purge)
+    from cutweave.assets.library import LOOKS
+    from cutweave.autoedit.modes import MODES
+
+    auto = commands.add_parser("auto", help="Montage automatique : rushs + style -> variantes prêtes à exporter.")
+    auto.add_argument("project", help="Dossier du projet (créé s'il n'existe pas).")
+    auto.add_argument("rushes", nargs="*", help="Vidéos ou dossiers à ajouter comme rushs.")
+    auto.add_argument("--mode", choices=[mode.key for mode in MODES], default="edit")
+    auto.add_argument("--aspect", choices=("9:16", "16:9", "1:1"), default="9:16")
+    auto.add_argument("--quality", type=int, default=1080, help="Petit côté de la sortie en pixels (défaut 1080).")
+    auto.add_argument("--duration", type=float, help="Durée visée en secondes (défaut : selon le style).")
+    auto.add_argument("--music", default="auto", help="auto, none, clé intégrée (pulse, sunday…) ou fichier audio.")
+    auto.add_argument("--look", choices=[look.key for look in LOOKS])
+    auto.add_argument("--fit", choices=("fill", "fit_blur"), default="fill")
+    auto.add_argument("--title", default="")
+    auto.add_argument("--outro", default="")
+    auto.add_argument("--variants", type=int, choices=(1, 2, 3), default=3)
+    auto.set_defaults(func=_auto)
     args = parser.parse_args(argv)
     return args.func(args)
 

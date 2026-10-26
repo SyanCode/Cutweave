@@ -312,6 +312,15 @@ class ProjectStore:
             rows = connection.execute("SELECT * FROM media ORDER BY id").fetchall()
         return [self._media_from_row(row) for row in rows]
 
+    def remove_media(self, media_ids) -> int:
+        """Retire des médias du projet (et leurs réglages) ; les fichiers sur disque ne sont pas touchés."""
+        ids = [int(media_id) for media_id in media_ids]
+        if not ids:
+            return 0
+        with self._connect() as connection:
+            cursor = connection.executemany("DELETE FROM media WHERE id=?", [(media_id,) for media_id in ids])
+            return cursor.rowcount
+
     def set_captions(self, media_id: int, cues: tuple[CaptionCue, ...] | list[CaptionCue]) -> None:
         for cue in cues:
             cue.validate()

@@ -6,7 +6,9 @@ Un projet est un **dossier** choisi par l'utilisateur. Les rushs ne sont jamais 
 MonProjet/
 ├── project.json              manifeste (schéma 1)
 ├── cutweave.sqlite3          métadonnées, instructions de montage, historique des tâches
-├── exports/                  exports proposés par défaut
+├── exports/                  exports proposés par défaut (et aperçus des variantes du Studio)
+├── montages/                 Studio : <mode>_<lettre>.mp4 (master assemblé), .plan.json, .result.json
+├── assets/                   copies des musiques et SFX intégrés utilisés (projet autonome)
 ├── tracking/                 trajectoires de tracking exportées (JSON)
 ├── .cutweave_pipeline/       checkpoints de reprise et instructions compilées
 │   ├── state_media_<id>.json
@@ -14,7 +16,9 @@ MonProjet/
 └── .cutweave_cache/          cache local (purgeable)
     ├── render/<sha256>.mp4
     ├── tracking/<sha256>.json
-    └── thumbnails/broll-<id>.jpg
+    ├── analysis/<empreinte>.json        analyse des rushs (mouvement, son, netteté…)
+    ├── autoedit_shots/<sha256>.mkv      plans normalisés réutilisés entre variantes
+    └── thumbnails/broll-<id>.jpg | rush-<id>.jpg | <mode>_<lettre>.jpg
 ```
 
 ## `project.json`
@@ -80,3 +84,14 @@ Les colonnes ajoutées par une version ultérieure sont créées automatiquement
 ## Checkpoints et reprise
 
 `state_media_<id>.json` enregistre, pour chaque étape (`visual`, `composition`, `finishing`, `render`), la clé de cache, le statut, l'empreinte SHA-256 de l'artefact produit et l'éventuelle erreur. Une relance réutilise une étape seulement si sa clé (fichiers source, paramètres, version du module, clés des dépendances) **et** l'empreinte de son artefact sont inchangées.
+
+## Montages du Studio (`montages/`)
+
+Chaque variante générée par le Studio produit :
+
+- `<mode>_<lettre>.plan.json` : le plan de montage complet (extraits source, durées, effets, transitions, look, musique et tempo, ducking, SFX, titres, graine). Le même plan produit toujours le même master.
+- `<mode>_<lettre>.mp4` : le master assemblé (rushs coupés, recadrés, étalonnés, enchaînés). Il est enregistré comme média du projet ; ses réglages (captions de titre, preset, musique en boucle avec ducking, SFX, netteté) sont écrits dans la base et restent modifiables dans l'éditeur.
+- `<mode>_<lettre>.result.json` : résumé affiché dans le Studio (aperçu, miniature, durée, nombre de plans).
+
+Les médias situés dans `montages/` sont des montages ; tous les autres sont des rushs.
+

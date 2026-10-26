@@ -9,8 +9,10 @@ from cutweave.stages.finishing.caption_presets import (
 from cutweave.storage.project_store import ProjectStore
 
 
-def test_three_builtins_are_available_and_valid():
-    assert [preset.name for preset in BUILTIN_CAPTION_PRESETS] == ["Clean", "Dynamic", "Cinematic"]
+def test_builtins_are_available_and_valid():
+    assert [preset.name for preset in BUILTIN_CAPTION_PRESETS] == [
+        "Clean", "Dynamic", "Cinematic", "Impact", "Vlog", "Néon", "Souvenir",
+    ]
     for preset in BUILTIN_CAPTION_PRESETS:
         preset.validate()
 

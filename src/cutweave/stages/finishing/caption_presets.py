@@ -104,6 +104,20 @@ BUILTIN_CAPTION_PRESETS: tuple[CaptionPreset, ...] = (
                   outline_width=1.2, shadow=0.8, background_color="#000000", background_opacity=210,
                   alignment=2, margin_horizontal_percent=8, margin_vertical_percent=10,
                   animation="fade", animation_ms=220),
+    CaptionPreset("Impact", font_name="Arial Black", font_size=78, text_color="#FFFFFF",
+                  highlight_color="#FFE14D", outline_color="#000000", outline_width=5, shadow=0,
+                  alignment=5, margin_horizontal_percent=7, bold=True, animation="pop", animation_ms=140,
+                  highlight_mode="cue"),
+    CaptionPreset("Vlog", font_name="Arial", font_size=50, text_color="#FFFFFF", highlight_color="#FFB020",
+                  outline_color="#101010", outline_width=0, shadow=0, background_color="#111111",
+                  background_opacity=185, alignment=2, margin_vertical_percent=12, bold=True,
+                  animation="fade", animation_ms=180),
+    CaptionPreset("Néon", font_name="Arial", font_size=64, text_color="#FFFFFF", highlight_color="#00E5FF",
+                  outline_color="#00B3FF", outline_width=4, shadow=2, shadow_color="#3A00FF", alignment=5,
+                  bold=True, animation="pop", animation_ms=120, highlight_mode="cue"),
+    CaptionPreset("Souvenir", font_name="Georgia", font_size=58, text_color="#FFF4E0", highlight_color="#FFD9A0",
+                  outline_color="#3B2A1A", outline_width=1.5, shadow=1.5, shadow_color="#3B2A1A", alignment=5,
+                  animation="fade", animation_ms=400),
 )
 
 BUILTIN_BY_NAME = {preset.name.casefold(): preset for preset in BUILTIN_CAPTION_PRESETS}
