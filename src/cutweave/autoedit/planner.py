@@ -16,7 +16,7 @@ from typing import Sequence
 
 import numpy as np
 
-from cutweave.autoedit.analysis import STEP, RushAnalysis, activity_segments, interest_curve
+from cutweave.autoedit.analysis import FINE_STEP, STEP, RushAnalysis, activity_segments, interest_curve
 from cutweave.autoedit.modes import EditMode, VariantProfile
 
 FPS = 30
@@ -412,7 +412,14 @@ def _plan_beats(analyses, mode: EditMode, variant: VariantProfile, request: Edit
 
 # --- Stratégie « parole » ---------------------------------------------------------------------------
 
-def _split_long(segment: tuple[float, float], longest: float, loudness, rng: random.Random):
+def _voice_levels(analysis: RushAnalysis):
+    """Niveau sonore le plus fin disponible et son pas."""
+    if analysis.fine_loudness:
+        return np.asarray(analysis.fine_loudness), FINE_STEP
+    return np.asarray(analysis.loudness), STEP
+
+
+def _split_long(segment: tuple[float, float], longest: float, loudness, rng: random.Random, step: float = STEP):
     start, end = segment
     if end - start <= longest:
         return [segment]
@@ -421,10 +428,10 @@ def _split_long(segment: tuple[float, float], longest: float, loudness, rng: ran
     for part in range(1, parts):
         ideal = start + (end - start) * part / parts
         # Coupe au point le plus calme à ±0,8 s de la position idéale.
-        low, high = int((ideal - 0.8) / STEP), int((ideal + 0.8) / STEP)
+        low, high = int((ideal - 0.8) / step), int((ideal + 0.8) / step)
         window = loudness[max(0, low):max(low + 1, high)]
         offset = int(np.argmin(window)) if len(window) else 0
-        boundaries.append(max(boundaries[-1] + 1.0, (max(0, low) + offset) * STEP))
+        boundaries.append(max(boundaries[-1] + 1.0, (max(0, low) + offset) * step))
     boundaries.append(end)
     return [(boundaries[i], boundaries[i + 1]) for i in range(len(boundaries) - 1) if boundaries[i + 1] - boundaries[i] > 0.4]
 
@@ -433,17 +440,21 @@ def _plan_speech(analyses, mode: EditMode, variant: VariantProfile, request: Edi
     rushes = _prepare(analyses, mode)
     order = _chronological(analyses)
     # Variante énergique : coupes serrées ; posée : davantage de respiration autour de la voix.
-    gap, pad = (0.3, 0.08) if variant.pacing < 1 else (0.45, 0.15) if variant.pacing == 1 else (0.75, 0.28)
+    # Le silence est supprimé au-delà de ``gap`` ; en dessous la pause naturelle est conservée, ce qui
+    # évite l'effet « mitraillette ». ``pad`` garde une respiration avant et après chaque phrase.
+    gap, pad = (0.4, 0.1) if variant.pacing < 1 else (0.55, 0.16) if variant.pacing == 1 else (0.85, 0.28)
     entries: list[tuple[_Rush, float, float, bool, float]] = []
     for rush_index in order:
         rush = rushes[rush_index]
         analysis = rush.analysis
-        segments = activity_segments(analysis.loudness, merge_gap=gap, pad=pad, duration=analysis.duration) \
+        levels, step = _voice_levels(analysis)
+        segments = activity_segments(levels, step=step, merge_gap=gap, pad=pad, duration=analysis.duration,
+                                     min_len=0.45, snap=True, short_len=1.0, short_gap=1.3) \
             if analysis.has_audio else ()
         if segments and sum(e - s for s, e in segments) >= 0.12 * analysis.duration:
             longest = 7.0 if mode.key == "talking" else 14.0
             for segment in segments:
-                for start, end in _split_long(segment, longest * variant.pacing, analysis.loudness, rng):
+                for start, end in _split_long(segment, longest * variant.pacing, levels, rng, step):
                     a, b = int(start / STEP), max(int(start / STEP) + 1, int(end / STEP))
                     score = float(np.mean(rush.curve[a:b])) if b <= len(rush.curve) else 0.5
                     entries.append((rush, start, end - start, True, score))
@@ -489,7 +500,7 @@ def _plan_speech(analyses, mode: EditMode, variant: VariantProfile, request: Edi
             same_rush = prev.rush_index == rush.index
             if same_rush:
                 zoom_toggle = not zoom_toggle if mode.key == "talking" or rng.random() < 0.5 else zoom_toggle
-                effect = "punch" if zoom_toggle else "none"
+                effect = "punch_soft" if zoom_toggle else "none"
             else:
                 zoom_toggle = False
                 kind, duration, _w = _weighted(rng, mode.transitions)

@@ -27,9 +27,10 @@ from cutweave.media.render import (
 )
 
 LOGGER = logging.getLogger("cutweave.autoedit")
-SHOT_VERSION = "shot-v3"
+SHOT_VERSION = "shot-v4"
 ZOOM = 1.12
 PUNCH = 1.16
+PUNCH_SOFT = 1.08
 
 
 def _even(value: float) -> int:
@@ -46,7 +47,8 @@ def _encoder_args(encoder: str, *, fast: bool) -> list[str]:
 
 def shot_video_filter(shot: Shot, width: int, height: int, fit: str) -> str:
     """Graphe vidéo d'un plan, de l'entrée ``[0:v]`` à la sortie ``[v]``."""
-    zoom = PUNCH if shot.effect == "punch" else ZOOM if shot.effect != "none" else 1.0
+    zoom = (PUNCH if shot.effect == "punch" else PUNCH_SOFT if shot.effect == "punch_soft"
+            else ZOOM if shot.effect != "none" else 1.0)
     canvas_w, canvas_h = _even(width * zoom), _even(height * zoom)
     length = shot.duration
     head = "[0:v]setpts=PTS-STARTPTS"
@@ -65,7 +67,7 @@ def shot_video_filter(shot: Shot, width: int, height: int, fit: str) -> str:
         graph = [f"{head},scale={canvas_w}:{canvas_h}:force_original_aspect_ratio=increase,"
                  f"crop={canvas_w}:{canvas_h},setsar=1[canvas]"]
     progress = f"min(t/{length:.4f},1)"
-    if shot.effect in {"none", "punch"}:
+    if shot.effect in {"none", "punch", "punch_soft"}:
         motion = f"crop={width}:{height}"
     elif shot.effect in {"push_in", "pull_out"}:
         ratio = progress if shot.effect == "push_in" else f"(1-{progress})"
@@ -83,7 +85,6 @@ def shot_video_filter(shot: Shot, width: int, height: int, fit: str) -> str:
 
 def shot_audio_filter(shot: Shot, has_audio: bool) -> str:
     length = shot.duration
-    fade_out = max(0.0, length - 0.02)
     if not has_audio or shot.audio_gain <= 0:
         return f"anullsrc=r=48000:cl=stereo,atrim=duration={length:.6f}[a]"
     chain = ["[0:a]asetpts=PTS-STARTPTS", "aresample=48000",
@@ -91,7 +92,7 @@ def shot_audio_filter(shot: Shot, has_audio: bool) -> str:
     if abs(shot.speed - 1.0) > 1e-6:
         chain.append(f"atempo={shot.speed:.4f}")
     chain.extend([f"volume={shot.audio_gain:.3f}", "apad", f"atrim=duration={length:.6f}",
-                  "afade=t=in:st=0:d=0.012", f"afade=t=out:st={fade_out:.4f}:d=0.02[a]"])
+                  "afade=t=in:st=0:d=0.02", f"afade=t=out:st={max(0.0, length - 0.03):.4f}:d=0.03[a]"])
     return ",".join(chain)
 
 

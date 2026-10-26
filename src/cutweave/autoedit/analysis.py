@@ -30,7 +30,8 @@ from cutweave.media.render import ffmpeg_path
 
 LOGGER = logging.getLogger("cutweave.autoedit")
 STEP = 0.25
-ANALYSIS_VERSION = 2
+ANALYSIS_VERSION = 3
+FINE_STEP = 0.05
 FRAME_W, FRAME_H = 96, 54
 AUDIO_RATE = 8000
 
@@ -55,6 +56,7 @@ class RushAnalysis:
     loudness: tuple[float, ...]
     scene_cuts: tuple[float, ...]
     activity: tuple[tuple[float, float], ...]
+    fine_loudness: tuple[float, ...] = ()     # niveau sonore par pas de FINE_STEP (précision des coupes)
 
     @property
     def samples(self) -> int:
@@ -79,6 +81,7 @@ class RushAnalysis:
         for key in ("motion", "brightness", "sharpness", "loudness", "scene_cuts"):
             data[key] = tuple(float(value) for value in data[key])
         data["activity"] = tuple((float(a), float(b)) for a, b in data["activity"])
+        data["fine_loudness"] = tuple(float(value) for value in data.get("fine_loudness", ()))
         return cls(**data)
 
 
@@ -149,19 +152,23 @@ def _video_curves(path: Path, samples: int, cancel_event):
 
 
 def _audio_curve(path: Path, samples: int, cancel_event):
+    """Retourne (niveau grossier par STEP, niveau fin par FINE_STEP) en dBFS."""
     binary = ffmpeg_path()
     command = [binary, "-hide_banner", "-loglevel", "error", "-i", str(path), "-vn", "-sn", "-dn",
                "-ac", "1", "-ar", str(AUDIO_RATE), "-f", "s16le", "pipe:1"]
     raw = _run_pipe(command, cancel_event)
     pcm = np.frombuffer(raw[: len(raw) // 2 * 2], dtype="<i2").astype(np.float32) / 32768.0
-    window = int(AUDIO_RATE * STEP)
+    window = int(AUDIO_RATE * FINE_STEP)
     count = len(pcm) // window
+    fine_samples = samples * int(round(STEP / FINE_STEP))
     if count == 0:
-        return np.full(samples, -90.0)
-    blocks = pcm[: count * window].reshape(count, window)
-    rms = np.sqrt(np.mean(blocks ** 2, axis=1))
-    loudness = 20 * np.log10(np.maximum(rms, 1e-5))
-    return _fit(loudness, samples, fill=-90.0)
+        return np.full(samples, -90.0), np.full(fine_samples, -90.0)
+    power = np.mean(pcm[: count * window].reshape(count, window) ** 2, axis=1)
+    fine = 10 * np.log10(np.maximum(power, 1e-10))
+    group = int(round(STEP / FINE_STEP))
+    usable = len(power) // group * group
+    coarse = 10 * np.log10(np.maximum(power[:usable].reshape(-1, group).mean(axis=1), 1e-10))
+    return _fit(coarse, samples, fill=-90.0), _fit(fine, fine_samples, fill=-90.0)
 
 
 def _fit(values, samples: int, fill: float | None = None) -> np.ndarray:
@@ -173,8 +180,14 @@ def _fit(values, samples: int, fill: float | None = None) -> np.ndarray:
 
 
 def activity_segments(loudness, *, step: float = STEP, min_len: float = 0.5, merge_gap: float = 0.45,
-                      pad: float = 0.15, duration: float | None = None) -> tuple[tuple[float, float], ...]:
-    """Intervalles où le niveau sonore dépasse un seuil adaptatif (plancher de bruit + 9 dB)."""
+                      pad: float = 0.15, duration: float | None = None, snap: bool = False,
+                      short_len: float = 0.0, short_gap: float = 0.0) -> tuple[tuple[float, float], ...]:
+    """Intervalles où le niveau sonore dépasse un seuil adaptatif (plancher de bruit + 9 dB).
+
+    ``snap`` déplace chaque coupe vers le point le plus calme de la marge (respiration plutôt que
+    milieu de mot). ``short_len``/``short_gap`` recollent un segment très court à son voisin quand
+    la pause qui les sépare est brève : on garde alors la pause naturelle au lieu d'un micro-plan.
+    """
     levels = np.asarray(loudness, dtype=np.float64)
     if not len(levels):
         return ()
@@ -200,12 +213,35 @@ def activity_segments(loudness, *, step: float = STEP, min_len: float = 0.5, mer
             merged[-1][1] = segment[1]
         else:
             merged.append(segment)
+    if short_len > 0:
+        glued: list[list[float]] = []
+        for segment in merged:
+            if glued and segment[0] - glued[-1][1] <= short_gap and \
+                    (segment[1] - segment[0] < short_len or glued[-1][1] - glued[-1][0] < short_len):
+                glued[-1][1] = segment[1]
+            else:
+                glued.append(segment)
+        merged = glued
     limit = duration if duration is not None else len(levels) * step
+
+    def quietest(center: float, low: float, high: float) -> float:
+        a, b = max(0, int(round(low / step))), min(len(levels) - 1, int(round(high / step)))
+        if b < a:
+            return center
+        return (a + int(np.argmin(levels[a:b + 1]))) * step
+
     result = []
     for begin, end in merged:
         if end - begin < min_len:
             continue
-        result.append((round(max(0.0, begin - pad), 3), round(min(limit, end + pad), 3)))
+        start_cut, end_cut = max(0.0, begin - pad), min(limit, end + pad)
+        if snap and pad > 0.04:
+            reach = min(pad / 2, 0.1)
+            # La coupe reste dans la marge : jamais à l'intérieur de la parole détectée.
+            start_cut = quietest(start_cut, start_cut - reach, min(start_cut + reach, begin - 0.03))
+            end_cut = quietest(end_cut, max(end_cut - reach, end + 0.03), end_cut + reach)
+            start_cut, end_cut = max(0.0, start_cut), min(limit, end_cut)
+        result.append((round(start_cut, 3), round(end_cut, 3)))
     # Le padding peut faire se chevaucher deux segments voisins : on les recolle.
     joined: list[tuple[float, float]] = []
     for begin, end in result:
@@ -236,8 +272,11 @@ def analyze_rush(path: str | Path, *, cache_dir: str | Path | None = None, info:
         raise AnalysisError(f"Durée inconnue pour {source.name}.")
     samples = max(1, int(np.ceil(info.duration / STEP)))
     motion, brightness, sharpness, cuts = _video_curves(source, samples, cancel_event)
-    loudness = _audio_curve(source, samples, cancel_event) if info.has_audio else np.full(samples, -90.0)
-    activity = activity_segments(loudness, duration=info.duration) if info.has_audio else ()
+    if info.has_audio:
+        loudness, fine = _audio_curve(source, samples, cancel_event)
+    else:
+        loudness, fine = np.full(samples, -90.0), np.zeros(0)
+    activity = activity_segments(fine, step=FINE_STEP, duration=info.duration) if info.has_audio else ()
     analysis = RushAnalysis(
         path=str(source), name=source.name, duration=float(info.duration),
         width=int(info.width or 0), height=int(info.height or 0), frame_rate=float(info.frame_rate or 30.0),
@@ -246,7 +285,7 @@ def analyze_rush(path: str | Path, *, cache_dir: str | Path | None = None, info:
         brightness=tuple(round(float(v), 4) for v in brightness),
         sharpness=tuple(round(float(v), 2) for v in sharpness),
         loudness=tuple(round(float(v), 2) for v in loudness),
-        scene_cuts=cuts, activity=activity,
+        scene_cuts=cuts, activity=activity, fine_loudness=tuple(round(float(v), 1) for v in fine),
     )
     if cache_file is not None:
         cache_file.parent.mkdir(parents=True, exist_ok=True)

@@ -83,7 +83,7 @@ def test_speech_modes_keep_voice_and_drop_silences():
     assert 19 <= kept <= 23
     assert all(shot.speech for shot in plan.shots)
     effects = [shot.effect for shot in plan.shots]
-    assert "punch" in effects and "none" in effects
+    assert "punch_soft" in effects and "none" in effects
     vlog = build_plan((talk, *RUSHES), MODES_BY_KEY["vlog"], VARIANTS[0], EditRequest("vlog"), MUSIC)
     assert vlog.duck_segments and vlog.duck_level < 1
     assert any(not shot.speech for shot in vlog.shots)
@@ -156,3 +156,38 @@ def test_builtin_assets_are_synthesized_deterministically(tmp_path):
     assert all(look.filters for look in library.LOOKS)
     keys = {track.key for track in library.music_catalog()}
     assert all(set(mode.music) <= keys for mode in MODES)
+
+
+def test_fine_activity_cuts_land_in_the_pause_and_keep_short_breaths():
+    step = 0.05
+    levels = np.full(400, -62.0)        # 20 s
+    levels[20:100] = -20.0              # 1,0 -> 5,0 s
+    levels[104:130] = -20.0             # 5,2 -> 6,5 s : pause 0,2 s (conservée)
+    levels[200:210] = -20.0             # 10 -> 10,5 s : court, isolé (écarté)
+    levels[300:380] = -20.0             # 15 -> 19 s
+    levels[96:104] = -50.0              # creux dans la pause
+    segments = activity_segments(levels, step=step, merge_gap=0.5, pad=0.16, duration=20.0, min_len=0.6,
+                                 snap=True, short_len=1.0, short_gap=1.3)
+    assert len(segments) == 2
+    (a0, a1), (b0, b1) = segments
+    assert 0.7 <= a0 <= 1.0 and 6.5 <= a1 <= 6.7
+    assert 14.7 <= b0 <= 15.0 and 19.0 <= b1 <= 19.25
+    # Jamais à l'intérieur de la parole détectée.
+    assert a0 < 1.0 and b1 > 19.0
+
+
+def test_speech_plan_uses_fine_loudness_and_soft_zoom_between_jump_cuts():
+    step = 0.05
+    levels = np.full(int(40 / step), -62.0)
+    for start, end in ((1, 6), (8, 14), (17, 25), (28, 36)):
+        levels[int(start / step):int(end / step)] = -20.0
+    talk = RushAnalysis(**{**_rush("talk.mp4", 40.0, seed=7).__dict__,
+                           "fine_loudness": tuple(float(v) for v in levels)})
+    plan = build_plan((talk,), MODES_BY_KEY["talking"], VARIANTS[0], EditRequest("talking"), None)
+    assert 4 <= len(plan.shots) <= 8
+    assert {shot.effect for shot in plan.shots} <= {"none", "punch_soft"}
+    assert "punch_soft" in {shot.effect for shot in plan.shots}
+    # Les coupes laissent une respiration (≥ 0,1 s) avant la première phrase.
+    first = plan.shots[0]
+    assert 0.6 <= first.source_start <= 1.0
+    assert sum(shot.duration for shot in plan.shots) < 30
