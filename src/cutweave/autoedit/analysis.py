@@ -25,6 +25,7 @@ from pathlib import Path
 
 import numpy as np
 
+from cutweave.core.proc import popen_hidden
 from cutweave.media.probe import MediaInfo, probe_media
 from cutweave.media.render import ffmpeg_path
 
@@ -92,7 +93,7 @@ def file_fingerprint(path: Path) -> str:
 
 
 def _run_pipe(command: list[str], cancel_event, timeout: float = 1800) -> bytes:
-    process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.DEVNULL)
+    process = popen_hidden(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.DEVNULL)
     chunks: list[bytes] = []
     errors: list[bytes] = []
 

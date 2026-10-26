@@ -128,25 +128,41 @@ class Look:
     swatch: tuple[str, str]
 
 
+def tone(contrast: float = 1.0, saturation: float = 1.0, gamma: float = 1.0, brightness: float = 0.0) -> str:
+    """Réglage de ton sans le filtre ``eq`` (réservé aux builds FFmpeg GPL, absent des builds LGPL).
+
+    Luminance : ``lutyuv`` ; saturation : ``hue``. Même résultat que ``eq`` pour ces quatre réglages.
+    """
+    parts = []
+    if (contrast, gamma, brightness) != (1.0, 1.0, 0.0):
+        parts.append(
+            f"lutyuv=y='clip(((pow(val/maxval,1/{gamma:.4f})-0.5)*{contrast:.4f}+0.5+{brightness:.4f})*maxval,"
+            "minval,maxval)'"
+        )
+    if saturation != 1.0:
+        parts.append(f"hue=s={saturation:.4f}")
+    return ",".join(parts) or "null"
+
+
 LOOKS: tuple[Look, ...] = (
-    Look("natural", "Naturel", "Léger contraste, couleurs fidèles.", "eq=contrast=1.04:saturation=1.06",
+    Look("natural", "Naturel", "Léger contraste, couleurs fidèles.", tone(1.04, 1.06),
          ("#8a9bb0", "#d8c7a8")),
     Look("punchy", "Punchy", "Contraste et saturation marqués, idéal réseaux.",
-         "eq=contrast=1.14:saturation=1.32:gamma=0.97", ("#ff3d7f", "#ffb800")),
+         tone(1.14, 1.32, 0.97), ("#ff3d7f", "#ffb800")),
     Look("warm", "Chaud", "Tons dorés, peau flatteuse.",
-         "colorbalance=rs=0.06:gs=0.01:bs=-0.06:rm=0.04:bm=-0.04,eq=saturation=1.1:contrast=1.04",
+         "colorbalance=rs=0.06:gs=0.01:bs=-0.06:rm=0.04:bm=-0.04," + tone(1.04, 1.1),
          ("#ff9a3c", "#ffd59e")),
     Look("cool", "Froid", "Bleus profonds, ambiance urbaine.",
-         "colorbalance=rs=-0.05:bs=0.07:rh=-0.03:bh=0.04,eq=saturation=1.04:contrast=1.06", ("#2f80ed", "#9be7ff")),
+         "colorbalance=rs=-0.05:bs=0.07:rh=-0.03:bh=0.04," + tone(1.06, 1.04), ("#2f80ed", "#9be7ff")),
     Look("teal_orange", "Teal & Orange", "Le look blockbuster.",
-         "colorbalance=rs=-0.08:gs=-0.02:bs=0.10:rh=0.10:gh=0.02:bh=-0.08,eq=contrast=1.1:saturation=1.18",
+         "colorbalance=rs=-0.08:gs=-0.02:bs=0.10:rh=0.10:gh=0.02:bh=-0.08," + tone(1.1, 1.18),
          ("#008c8c", "#ff8c42")),
     Look("vintage", "Vintage", "Pellicule délavée et grain.",
-         "curves=preset=vintage,eq=saturation=0.88,noise=alls=7:allf=t", ("#c2a878", "#6f8f72")),
+         "curves=preset=vintage," + tone(saturation=0.88) + ",noise=alls=7:allf=t", ("#c2a878", "#6f8f72")),
     Look("film", "Film", "Grain doux, noirs relevés, vignettage.",
-         "curves=all='0/0.04 0.5/0.5 1/0.96',eq=saturation=0.94:contrast=1.05,noise=alls=5:allf=t,vignette=PI/6",
+         "curves=all='0/0.04 0.5/0.5 1/0.96'," + tone(1.05, 0.94) + ",noise=alls=5:allf=t,vignette=PI/6",
          ("#3a3a3a", "#d9cbb0")),
-    Look("mono", "Noir & blanc", "Monochrome contrasté.", "hue=s=0,eq=contrast=1.2:brightness=0.01",
+    Look("mono", "Noir & blanc", "Monochrome contrasté.", "hue=s=0," + tone(1.2, brightness=0.01),
          ("#111111", "#eeeeee")),
 )
 

@@ -14,6 +14,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Sequence
 
+from cutweave.core.proc import popen_hidden, run_hidden
 from cutweave.stages.composition.captions import CaptionCue, sanitize_caption_markup
 from cutweave.stages.composition.broll import BrollRenderClip
 from cutweave.stages.composition.masking import MaskRegion
@@ -140,7 +141,7 @@ def extract_preview_frame(
         command.extend(["-vf", vf])
     command.extend(["-f", "image2pipe", "-vcodec", "png", "pipe:1"])
     try:
-        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        process = popen_hidden(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     except OSError as exc:
         raise RenderError(f"Impossible de démarrer FFmpeg : {exc}") from exc
     started = time.monotonic()
@@ -226,7 +227,7 @@ def select_video_encoder(available: set[str]) -> str:
 
 def _available_video_encoders(binary: str) -> set[str]:
     try:
-        result = subprocess.run(
+        result = run_hidden(
             [binary, "-hide_banner", "-encoders"], capture_output=True, text=True,
             encoding="utf-8", errors="replace", timeout=15, check=False,
         )
@@ -528,7 +529,7 @@ def _run_ffmpeg(command: list[str], *, cwd: Path, duration_ms: int | None, on_pr
                 cancel_message: str) -> None:
     """Exécute FFmpeg avec lecture asynchrone de la progression et des erreurs."""
     command = [command[0], "-progress", "pipe:1", *command[1:]]
-    process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.DEVNULL,
+    process = popen_hidden(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.DEVNULL,
                                text=True, encoding="utf-8", errors="replace", cwd=cwd)
     stderr_lines: list[str] = []
     fractions: list[float] = []

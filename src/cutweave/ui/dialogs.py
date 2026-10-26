@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
     QLineEdit, QMessageBox, QPushButton, QTableWidget, QTableWidgetItem, QTextEdit, QVBoxLayout, QWidget,
 )
 
+from cutweave.core.proc import run_hidden
 from cutweave.core.pipeline import STAGE_LABELS, stage_statuses
 from cutweave.core.settings import AppSettings
 from cutweave.storage.project_store import MODULES
@@ -36,7 +37,7 @@ def tool_report(ffmpeg: str | None, ffprobe: str | None) -> str:
             lines.append(f"{label} : introuvable (PATH ou chemin configuré).")
             continue
         try:
-            result = subprocess.run([binary, "-hide_banner", "-version"], capture_output=True, text=True,
+            result = run_hidden([binary, "-hide_banner", "-version"], capture_output=True, text=True,
                                     encoding="utf-8", errors="replace", timeout=15, check=False)
             first = result.stdout.splitlines()[0] if result.stdout else f"code {result.returncode}"
             lines.append(f"{label} : {first}")
@@ -44,14 +45,19 @@ def tool_report(ffmpeg: str | None, ffprobe: str | None) -> str:
             lines.append(f"{label} : impossible de l'exécuter ({exc}).")
     if ffmpeg:
         try:
-            filters = subprocess.run([ffmpeg, "-hide_banner", "-filters"], capture_output=True, text=True,
+            filters = run_hidden([ffmpeg, "-hide_banner", "-filters"], capture_output=True, text=True,
                                      encoding="utf-8", errors="replace", timeout=15, check=False).stdout
-            encoders = subprocess.run([ffmpeg, "-hide_banner", "-encoders"], capture_output=True, text=True,
+            encoders = run_hidden([ffmpeg, "-hide_banner", "-encoders"], capture_output=True, text=True,
                                       encoding="utf-8", errors="replace", timeout=15, check=False).stdout
         except (OSError, subprocess.TimeoutExpired):
             filters = encoders = ""
         lines.append("Filtre ass (libass, captions) : " + ("disponible" if " ass " in filters else "ABSENT"))
         lines.append("Filtre unsharp : " + ("disponible" if " unsharp " in filters else "ABSENT"))
+        from cutweave.autoedit.assemble import missing_filters
+
+        absent = missing_filters(ffmpeg)
+        lines.append("Filtres du montage automatique : " + ("tous disponibles" if not absent
+                                                           else "ABSENTS : " + ", ".join(absent)))
         h264 = [name for name in ("libx264", "libopenh264", "h264_mf") if f" {name} " in encoders]
         lines.append("Encodeur H.264 : " + (", ".join(h264) if h264 else "aucun (repli MPEG-4)"))
     return "\n".join(lines)

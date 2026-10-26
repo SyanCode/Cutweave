@@ -82,3 +82,27 @@ def test_vlog_keeps_original_voice_with_ducked_music(project, tmp_path):
     assert mix.mix_original_audio and mix.ducking_segments
     assert result.look_title == "Chaud" and result.music_title == "Sunday"
     assert probe_media(result.preview).width == 214
+
+
+def test_every_look_runs_and_changes_the_picture(tmp_path):
+    from cutweave.assets.library import LOOKS
+    from cutweave.autoedit.assemble import filter_names
+
+    assert filter_names("eq=contrast=1.1,scale=2:2") == {"eq", "scale"}
+    for look in LOOKS:
+        out = tmp_path / f"{look.key}.png"
+        subprocess.run([ffmpeg_path(), "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
+                        "testsrc2=size=160x90:rate=1:duration=1", "-vf", look.filters, "-frames:v", "1", str(out)],
+                       check=True, capture_output=True)
+        assert out.stat().st_size > 500, look.key
+
+
+def test_missing_filter_gives_a_clear_error(project, tmp_path, monkeypatch):
+    from cutweave.autoedit import assemble
+
+    monkeypatch.setattr(assemble, "available_filters", lambda binary=None: {"scale", "crop"})
+    assert "xfade" in assemble.missing_filters() and "lutyuv" in assemble.missing_filters()
+    rushes = tuple(str(media.path) for media in rush_media(project))
+    with pytest.raises(Exception, match="filtres nécessaires"):
+        generate_variants(project, StudioRequest(rushes, "edit", "9:16", 120, 6.0, "none", None, "fill", "", "", 1),
+                          assets_root=tmp_path / "assets")

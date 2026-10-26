@@ -8,6 +8,7 @@ import time
 import uuid
 from pathlib import Path
 
+from cutweave.core.proc import popen_hidden
 from cutweave.media.render import ffmpeg_path
 
 
@@ -46,7 +47,7 @@ def create_video_thumbnail(
         if cancel_event is not None and cancel_event.is_set():
             raise ThumbnailError("Création de miniature annulée.")
         try:
-            process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            process = popen_hidden(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         except OSError as exc:
             raise ThumbnailError(f"Impossible de démarrer FFmpeg pour la miniature : {exc}") from exc
         started = time.monotonic()

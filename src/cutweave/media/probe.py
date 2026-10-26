@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from cutweave.core.proc import popen_hidden
+
 
 class MediaProbeError(RuntimeError):
     """Une erreur exploitable est survenue pendant l'analyse du média."""
@@ -90,7 +92,7 @@ def probe_media(path: str | Path, *, timeout: float = 30, cancel_event=None) -> 
         raise MediaProbeError("FFprobe est introuvable. Installez FFmpeg ou définissez CUTWEAVE_FFPROBE.")
     command = [binary, "-v", "error", "-show_streams", "-show_format", "-of", "json", str(media_path)]
     try:
-        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        process = popen_hidden(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                    text=True, encoding="utf-8", errors="replace")
     except OSError as exc:
         raise MediaProbeError(f"Impossible d'analyser {media_path.name} : {exc}") from exc
@@ -138,7 +140,7 @@ def probe_audio(path: str | Path, *, timeout: float = 30, cancel_event=None) -> 
         raise MediaProbeError("FFprobe est introuvable. Installez FFmpeg ou définissez CUTWEAVE_FFPROBE.")
     command = [binary, "-v", "error", "-show_streams", "-show_format", "-of", "json", str(media_path)]
     try:
-        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        process = popen_hidden(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                    text=True, encoding="utf-8", errors="replace")
     except OSError as exc:
         raise MediaProbeError(f"Impossible d'analyser {media_path.name} : {exc}") from exc

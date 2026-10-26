@@ -13,13 +13,16 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
+import re
+import subprocess
 import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Callable, Sequence
 
-from cutweave.assets.library import LOOKS_BY_KEY
+from cutweave.core.proc import run_hidden
+from cutweave.assets.library import LOOKS_BY_KEY, tone
 from cutweave.autoedit.analysis import file_fingerprint
 from cutweave.autoedit.planner import FPS, EditPlan, Shot, shot_starts
 from cutweave.media.render import (
@@ -31,6 +34,38 @@ SHOT_VERSION = "shot-v4"
 ZOOM = 1.12
 PUNCH = 1.16
 PUNCH_SOFT = 1.08
+
+
+# Filtres FFmpeg utilisés par le montage automatique : tous présents dans les builds LGPL.
+REQUIRED_FILTERS = (
+    "acrossfade", "aformat", "afade", "alimiter", "anull", "anullsrc", "apad", "aresample", "asetpts", "atempo",
+    "atrim", "boxblur", "colorbalance", "concat", "crop", "curves", "drawbox", "fade", "format", "fps", "hue",
+    "lutyuv", "noise", "null", "overlay", "scale", "setpts", "setsar", "settb", "split", "tpad", "trim",
+    "vignette", "volume", "xfade",
+)
+
+
+def available_filters(binary: str | None = None) -> set[str]:
+    binary = binary or ffmpeg_path()
+    if not binary:
+        return set()
+    try:
+        output = run_hidden([binary, "-hide_banner", "-filters"], capture_output=True, text=True,
+                            encoding="utf-8", errors="replace", timeout=20, check=False).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return set()
+    return set(re.findall(r"^\s*[A-Z.]{3}\s+(\S+)\s", output, re.M))
+
+
+def missing_filters(binary: str | None = None) -> list[str]:
+    present = available_filters(binary)
+    return [name for name in REQUIRED_FILTERS if name not in present] if present else []
+
+
+def filter_names(graph: str) -> set[str]:
+    """Noms de filtres d'un graphe FFmpeg (expressions entre apostrophes ignorées)."""
+    stripped = re.sub(r"'[^']*'", "''", graph)
+    return set(re.findall(r"(?:^|[,;\]])\s*([a-z][a-z0-9_]*)(?==|,|;|\[|$)", stripped))
 
 
 def _even(value: float) -> int:
@@ -59,7 +94,7 @@ def shot_video_filter(shot: Shot, width: int, height: int, fit: str) -> str:
         graph = [
             f"{head},split=2[bgsrc][fgsrc]",
             f"[bgsrc]scale={canvas_w}:{canvas_h}:force_original_aspect_ratio=increase,crop={canvas_w}:{canvas_h},"
-            f"boxblur=luma_radius=24:luma_power=2,eq=brightness=-0.06[bg]",
+            f"boxblur=luma_radius=24:luma_power=2,{tone(brightness=-0.06)}[bg]",
             f"[fgsrc]scale={canvas_w}:{canvas_h}:force_original_aspect_ratio=decrease,setsar=1[fg]",
             "[bg][fg]overlay=x=(W-w)/2:y=(H-h)/2,setsar=1[canvas]",
         ]
@@ -235,6 +270,13 @@ def render_plan(
     if not binary:
         raise RenderError("FFmpeg est introuvable. Installez FFmpeg ou définissez CUTWEAVE_FFMPEG.")
     encoder = select_video_encoder(_available_video_encoders(binary))
+    absent = missing_filters(binary)
+    if absent:
+        raise RenderError(
+            "Cette version de FFmpeg ne contient pas les filtres nécessaires au montage automatique : "
+            + ", ".join(absent) + ". Installez un build complet (par exemple BtbN FFmpeg LGPL) puis renseignez-le "
+            "dans Paramètres."
+        )
     cache = Path(cache_dir)
     cache.mkdir(parents=True, exist_ok=True)
     output = Path(destination).resolve()

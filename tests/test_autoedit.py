@@ -191,3 +191,24 @@ def test_speech_plan_uses_fine_loudness_and_soft_zoom_between_jump_cuts():
     first = plan.shots[0]
     assert 0.6 <= first.source_start <= 1.0
     assert sum(shot.duration for shot in plan.shots) < 30
+
+
+def test_every_filter_used_by_the_studio_exists_in_lgpl_builds():
+    """Le build FFmpeg LGPL recommandé n'a pas ``eq`` (GPL) : seuls des filtres courants sont autorisés."""
+    from cutweave.autoedit.assemble import REQUIRED_FILTERS, build_assembly_graph, filter_names, shot_audio_filter
+
+    names = set()
+    for look in library.LOOKS:
+        names |= filter_names(look.filters)
+    for mode in MODES:
+        for variant in VARIANTS:
+            rushes = RUSHES if mode.strategy == "beats" else (
+                _rush("talk.mp4", 30.0, speech=((1, 6), (8, 14), (16, 25)), seed=4), *RUSHES)
+            plan = build_plan(rushes, mode, variant, EditRequest(mode.key, 1280, 720, title="T"), MUSIC)
+            names |= filter_names(build_assembly_graph(plan)[0])
+            for shot in plan.shots:
+                for fit in ("fill", "fit_blur"):
+                    names |= filter_names(shot_video_filter(shot, 1280, 720, fit))
+                names |= filter_names(shot_audio_filter(shot, True))
+    assert "eq" not in names and "hqdn3d" not in names
+    assert names <= set(REQUIRED_FILTERS), sorted(names - set(REQUIRED_FILTERS))

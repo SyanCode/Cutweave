@@ -13,6 +13,8 @@ from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from typing import Any, Iterable
 
+from cutweave.core.proc import run_hidden
+
 
 class CacheError(RuntimeError):
     pass
@@ -185,7 +187,7 @@ class StageCache:
         if not binary:
             return "unavailable"
         try:
-            result = subprocess.run([str(binary), "-version"], capture_output=True, text=True,
+            result = run_hidden([str(binary), "-version"], capture_output=True, text=True,
                                     encoding="utf-8", errors="replace", timeout=15, check=False)
         except (OSError, subprocess.TimeoutExpired):
             return "unknown"
