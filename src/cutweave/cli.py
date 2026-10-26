@@ -107,7 +107,7 @@ def _auto(args) -> int:
             print(f"Ignoré : {exc}", file=sys.stderr)
     rushes = tuple(str(media.path) for media in rush_media(store) if not media.missing)
     request = StudioRequest(rushes, args.mode, args.aspect, args.quality, args.duration, args.music, args.look,
-                            args.fit, args.title, args.outro, args.variants, draft=args.draft)
+                            args.fit, args.title, args.outro, args.variants, draft=args.draft, clean_noise=not args.keep_noise)
     cancel = threading.Event()
     last = [-1]
 
@@ -183,6 +183,8 @@ def main(argv=None) -> int:
     auto.add_argument("--title", default="")
     auto.add_argument("--outro", default="")
     auto.add_argument("--variants", type=int, choices=(1, 2, 3), default=3)
+    auto.add_argument("--keep-noise", action="store_true",
+                      help="Garde les bruits (toux, claquements) au lieu de les retirer des styles à voix.")
     auto.add_argument("--draft", action="store_true",
                       help="Aperçus rapides en 540p (refaits à la qualité demandée à l'export depuis l'application).")
     auto.set_defaults(func=_auto)

@@ -132,3 +132,28 @@ def test_draft_previews_are_finalized_at_export_quality(project, tmp_path, monke
     assert project.get_visual_settings(media.id).width == 240
     assert (project.root / "montages" / f"{result.key}.plan.json").read_text(encoding="utf-8") == plan_before
     assert service.ensure_final(project, media.id) is False
+
+
+def test_real_decoding_pipeline_removes_coughs(tmp_path):
+    """Analyse d'un vrai fichier (décodage FFmpeg à 8 kHz) : les bruits ne comptent pas comme parole."""
+    import wave
+
+    import numpy as np
+    from test_autoedit import _speech_and_noise
+
+    signal, total = _speech_and_noise()
+    wav = tmp_path / "voice.wav"
+    with wave.open(str(wav), "wb") as stream:
+        stream.setnchannels(1)
+        stream.setsampwidth(2)
+        stream.setframerate(8000)
+        stream.writeframes((np.clip(signal, -1, 1) * 32767).astype("<i2").tobytes())
+    clip = tmp_path / "voice.mp4"
+    subprocess.run([ffmpeg_path(), "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
+                    f"color=c=gray:s=160x90:r=10:d={total}", "-i", str(wav), "-c:v", "mpeg4", "-c:a", "aac",
+                    "-shortest", str(clip)], check=True, capture_output=True)
+    analysis = analyze_rush(clip, cache_dir=tmp_path / "cache")
+    assert len(analysis.fine_voicing) == len(analysis.fine_loudness) > 500
+    assert not any(a < 12.6 and b > 12.05 for a, b in analysis.activity), analysis.activity
+    assert not any(a < 16.0 and b > 15.6 for a, b in analysis.activity), analysis.activity
+    assert any(a <= 1.2 and b >= 3.8 for a, b in analysis.activity), analysis.activity

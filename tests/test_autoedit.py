@@ -272,3 +272,85 @@ def test_encoder_choice_prefers_working_hardware_then_falls_back(monkeypatch):
     assert "-pix_fmt" in encoders.encoder_args("h264_qsv", "draft", 540, 960)
     assert encoders.tier_for(540, 960) == "draft" and encoders.tier_for(1080, 1920) == "good"
     assert encoders.tier_for(160, 90, final=True) == "final"
+
+
+def _speech_and_noise(total=30):
+    """Voix synthétique (harmoniques + syllabes à 4 Hz) et bruits larges type toux."""
+    from cutweave.autoedit.analysis import AUDIO_RATE as sr
+
+    rng = np.random.default_rng(3)
+    signal = 0.002 * rng.standard_normal(total * sr)
+
+    def voiced(duration, f0=120):
+        t = np.arange(int(duration * sr)) / sr
+        phase = 2 * np.pi * np.cumsum(f0 * (1 + 0.05 * np.sin(2 * np.pi * 3 * t))) / sr
+        wave_ = sum(np.sin(k * phase) / k for k in range(1, 20))
+        return 0.25 * wave_ * (0.55 + 0.45 * np.sin(2 * np.pi * 4 * t) ** 2) / np.max(np.abs(wave_))
+
+    def noise(duration, amp):
+        burst = rng.standard_normal(int(duration * sr)) * np.exp(-np.arange(int(duration * sr)) / (0.12 * sr))
+        return amp * burst / np.max(np.abs(burst))
+
+    def put(at, sound):
+        signal[int(at * sr):int(at * sr) + len(sound)] += sound
+
+    put(1.0, voiced(3.0))
+    put(4.0, noise(0.08, 0.15))      # consonne sourde collée à la phrase : conservée
+    put(7.0, noise(0.35, 0.5))       # toux isolée
+    put(9.0, voiced(2.5))
+    put(12.0, noise(0.6, 0.5))       # toux longue collée à la phrase
+    put(13.2, voiced(2.0))
+    put(15.6, noise(0.4, 0.5))       # toux entre deux mots
+    put(16.4, voiced(2.0))
+    return signal, total
+
+
+def test_coughs_and_noises_are_removed_consistently():
+    from cutweave.autoedit.analysis import FINE_STEP, voicing_curve
+
+    signal, total = _speech_and_noise()
+    size = int(8000 * FINE_STEP)
+    blocks = signal[: len(signal) // size * size].reshape(-1, size)
+    levels = 10 * np.log10(np.maximum((blocks ** 2).mean(axis=1), 1e-10))
+    voicing = voicing_curve(blocks)
+    assert voicing[int(1.5 / FINE_STEP):int(3.5 / FINE_STEP)].mean() > 0.6
+    assert voicing[int(7.0 / FINE_STEP):int(7.3 / FINE_STEP)].mean() < 0.35
+    kwargs = dict(step=FINE_STEP, merge_gap=0.55, pad=0.16, duration=total, min_len=0.45, snap=True,
+                  short_len=1.0, short_gap=1.3)
+    plain = activity_segments(levels, **kwargs)
+    clean = activity_segments(levels, voicing=voicing, **kwargs)
+
+    def covers(segments, start, end):
+        return any(a <= start and b >= end for a, b in segments)
+
+    # Sans mesure de voix, les toux collées à la parole sont gardées (comportement incohérent d'avant).
+    assert covers(plain, 12.1, 12.5) and covers(plain, 15.7, 15.9)
+    for start, end in ((7.0, 7.35), (12.05, 12.6), (15.6, 16.0)):
+        assert not any(a < end and b > start for a, b in clean), (start, end, clean)
+    assert covers(clean, 1.0, 4.0) and covers(clean, 4.0, 4.08)       # voix et consonne sourde conservées
+    assert covers(clean, 9.0, 11.5) and covers(clean, 13.2, 15.2) and covers(clean, 16.4, 18.4)
+
+
+def test_speech_plan_respects_the_clean_noise_option():
+    signal, total = _speech_and_noise()
+    step = 0.05
+    size = int(8000 * step)
+    from cutweave.autoedit.analysis import voicing_curve
+
+    blocks = signal[: len(signal) // size * size].reshape(-1, size)
+    levels = 10 * np.log10(np.maximum((blocks ** 2).mean(axis=1), 1e-10))
+    talk = RushAnalysis(**{**_rush("talk.mp4", total, seed=9).__dict__,
+                           "fine_loudness": tuple(float(v) for v in levels),
+                           "fine_voicing": tuple(float(v) for v in voicing_curve(blocks))})
+
+    def sources(clean):
+        plan = build_plan((talk,), MODES_BY_KEY["talking"], VARIANTS[0],
+                          EditRequest("talking", clean_noise=clean), None)
+        return [(shot.source_start, shot.source_start + shot.duration) for shot in plan.shots]
+
+    def keeps_cough(ranges, start, end):
+        return any(a < end and b > start for a, b in ranges)
+
+    assert keeps_cough(sources(False), 12.1, 12.5)
+    assert not keeps_cough(sources(True), 12.05, 12.6)
+    assert not keeps_cough(sources(True), 15.6, 16.0)

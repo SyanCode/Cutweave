@@ -129,3 +129,20 @@ def test_studio_drop_generate_and_refine(window, tmp_path, monkeypatch):
     app.processEvents()
     assert main.pages.currentIndex() == 1
     assert main._selected_media().name == "highlights_A.mp4"
+
+
+def test_titles_are_opt_in_and_do_not_persist(window):
+    _app, main, _errors = window
+    studio = main.studio
+    assert not studio.title_toggle.isChecked() and not studio.title_edit.isEnabled()
+    studio.title_edit.setText("ne doit pas apparaître")
+    assert studio.build_request().title == ""
+    studio.title_toggle.setChecked(True)
+    studio.title_edit.setText("Mon titre")
+    studio.outro_toggle.setChecked(True)
+    studio.outro_edit.setText("Abonne-toi")
+    request = studio.build_request()
+    assert (request.title, request.outro) == ("Mon titre", "Abonne-toi")
+    studio.title_toggle.setChecked(False)
+    assert studio.title_edit.text() == "" and studio.build_request().title == ""
+    assert studio.build_request().clean_noise is True

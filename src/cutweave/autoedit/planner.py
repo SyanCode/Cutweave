@@ -83,6 +83,7 @@ class EditRequest:
     fit: str = "fill"               # fill | fit_blur
     title: str = ""
     outro: str = ""
+    clean_noise: bool = True        # retire toux, claquements, souffle (sons forts sans voix)
 
 
 @dataclass(frozen=True)
@@ -414,10 +415,11 @@ def _plan_beats(analyses, mode: EditMode, variant: VariantProfile, request: Edit
 # --- Stratégie « parole » ---------------------------------------------------------------------------
 
 def _voice_levels(analysis: RushAnalysis):
-    """Niveau sonore le plus fin disponible et son pas."""
+    """Niveau sonore le plus fin disponible, son pas et la périodicité (voix) si elle a été mesurée."""
     if analysis.fine_loudness:
-        return np.asarray(analysis.fine_loudness), FINE_STEP
-    return np.asarray(analysis.loudness), STEP
+        voicing = np.asarray(analysis.fine_voicing) if len(analysis.fine_voicing) == len(analysis.fine_loudness) else None
+        return np.asarray(analysis.fine_loudness), FINE_STEP, voicing
+    return np.asarray(analysis.loudness), STEP, None
 
 
 def _split_long(segment: tuple[float, float], longest: float, loudness, rng: random.Random, step: float = STEP):
@@ -448,9 +450,10 @@ def _plan_speech(analyses, mode: EditMode, variant: VariantProfile, request: Edi
     for rush_index in order:
         rush = rushes[rush_index]
         analysis = rush.analysis
-        levels, step = _voice_levels(analysis)
+        levels, step, voicing = _voice_levels(analysis)
         segments = activity_segments(levels, step=step, merge_gap=gap, pad=pad, duration=analysis.duration,
-                                     min_len=0.45, snap=True, short_len=1.0, short_gap=1.3) \
+                                     min_len=0.45, snap=True, short_len=1.0, short_gap=1.3,
+                                     voicing=voicing if request.clean_noise else None) \
             if analysis.has_audio else ()
         if segments and sum(e - s for s, e in segments) >= 0.12 * analysis.duration:
             longest = 7.0 if mode.key == "talking" else 14.0
@@ -512,7 +515,9 @@ def _plan_speech(analyses, mode: EditMode, variant: VariantProfile, request: Edi
                     shots[-1] = replace(prev, duration=quantize(prev.duration + duration))
                     transition = Transition(kind, duration)
                     position += duration
-        gain = mode.original_audio if speech else (0.25 if rush.analysis.has_audio else 0.0)
+        # Plans d'illustration (sans voix) : le son d'origine est coupé pour ne pas laisser passer de bruits.
+        ambient = 0.0 if request.clean_noise else 0.25
+        gain = mode.original_audio if speech else (ambient if rush.analysis.has_audio else 0.0)
         shots.append(Shot(rush.analysis.path, rush.index, round(start, 3), length, effect, 1.0, gain,
                           transition, round(score, 4), speech))
         start_on_timeline = position - transition.duration

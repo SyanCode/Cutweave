@@ -32,7 +32,7 @@ from cutweave.media.render import ffmpeg_path
 
 LOGGER = logging.getLogger("cutweave.autoedit")
 STEP = 0.25
-ANALYSIS_VERSION = 3
+ANALYSIS_VERSION = 4
 FINE_STEP = 0.05
 FRAME_W, FRAME_H = 96, 54
 AUDIO_RATE = 8000
@@ -59,6 +59,7 @@ class RushAnalysis:
     scene_cuts: tuple[float, ...]
     activity: tuple[tuple[float, float], ...]
     fine_loudness: tuple[float, ...] = ()     # niveau sonore par pas de FINE_STEP (précision des coupes)
+    fine_voicing: tuple[float, ...] = ()      # périodicité (0..1) par pas de FINE_STEP : voix vs bruit
 
     @property
     def samples(self) -> int:
@@ -84,6 +85,7 @@ class RushAnalysis:
             data[key] = tuple(float(value) for value in data[key])
         data["activity"] = tuple((float(a), float(b)) for a, b in data["activity"])
         data["fine_loudness"] = tuple(float(value) for value in data.get("fine_loudness", ()))
+        data["fine_voicing"] = tuple(float(value) for value in data.get("fine_voicing", ()))
         return cls(**data)
 
 
@@ -153,8 +155,35 @@ def _video_curves(path: Path, samples: int, cancel_event):
     return _fit(motion, samples), _fit(brightness, samples), _fit(sharpness, samples), tuple(cuts)
 
 
+PITCH_LAGS = (AUDIO_RATE // 400, AUDIO_RATE // 70)   # voix humaine : 70 à 400 Hz
+
+
+def voicing_curve(blocks: np.ndarray) -> np.ndarray:
+    """Périodicité de chaque bloc (0..1) : pic d'autocorrélation normalisé dans la plage de hauteur vocale.
+
+    Les voyelles et les sons voisés sont quasi périodiques (0,5 à 0,95) ; une toux, un claquement, un
+    souffle ou un bruit de bouche sont apériodiques (< 0,4). Traitement du signal classique.
+    """
+    count, size = blocks.shape
+    low, high = PITCH_LAGS
+    fft_size = 1 << int(np.ceil(np.log2(size * 2)))
+    lags = np.arange(low, min(high, size - 1) + 1)
+    correction = size / (size - lags)
+    result = np.zeros(count, dtype=np.float64)
+    for start in range(0, count, 4096):
+        chunk = blocks[start:start + 4096].astype(np.float64)
+        chunk = chunk - chunk.mean(axis=1, keepdims=True)
+        chunk[:, 1:] -= 0.95 * chunk[:, :-1]          # pré-accentuation : atténue ronflements et bourdon
+        spectrum = np.fft.rfft(chunk, fft_size, axis=1)
+        autocorr = np.fft.irfft(spectrum * np.conj(spectrum), fft_size, axis=1)
+        energy = autocorr[:, 0]
+        peak = (autocorr[:, lags] * correction).max(axis=1)
+        result[start:start + len(chunk)] = np.where(energy > 1e-9, np.clip(peak / np.maximum(energy, 1e-12), 0, 1), 0.0)
+    return result
+
+
 def _audio_curve(path: Path, samples: int, cancel_event):
-    """Retourne (niveau grossier par STEP, niveau fin par FINE_STEP) en dBFS."""
+    """Retourne (niveau grossier par STEP, niveau fin par FINE_STEP, périodicité fine) en dBFS / 0..1."""
     binary = ffmpeg_path()
     command = [binary, "-hide_banner", "-loglevel", "error", "-i", str(path), "-vn", "-sn", "-dn",
                "-ac", "1", "-ar", str(AUDIO_RATE), "-f", "s16le", "pipe:1"]
@@ -164,13 +193,15 @@ def _audio_curve(path: Path, samples: int, cancel_event):
     count = len(pcm) // window
     fine_samples = samples * int(round(STEP / FINE_STEP))
     if count == 0:
-        return np.full(samples, -90.0), np.full(fine_samples, -90.0)
-    power = np.mean(pcm[: count * window].reshape(count, window) ** 2, axis=1)
+        return np.full(samples, -90.0), np.full(fine_samples, -90.0), np.zeros(fine_samples)
+    blocks = pcm[: count * window].reshape(count, window)
+    power = np.mean(blocks ** 2, axis=1)
+    voicing = voicing_curve(blocks)
     fine = 10 * np.log10(np.maximum(power, 1e-10))
     group = int(round(STEP / FINE_STEP))
     usable = len(power) // group * group
     coarse = 10 * np.log10(np.maximum(power[:usable].reshape(-1, group).mean(axis=1), 1e-10))
-    return _fit(coarse, samples, fill=-90.0), _fit(fine, fine_samples, fill=-90.0)
+    return _fit(coarse, samples, fill=-90.0), _fit(fine, fine_samples, fill=-90.0), _fit(voicing, fine_samples, fill=0.0)
 
 
 def _fit(values, samples: int, fill: float | None = None) -> np.ndarray:
@@ -181,14 +212,39 @@ def _fit(values, samples: int, fill: float | None = None) -> np.ndarray:
     return np.concatenate([array, np.full(samples - len(array), pad_value)])
 
 
+VOICED_MIN = 0.45          # périodicité minimale d'un son voisé
+NOISE_MARGIN = 0.04        # marge coupée autour d'un bruit retiré (s)
+NOISE_REACH = 0.12         # consonnes sourdes (s, f, ch…) acceptées à côté d'une voyelle (s)
+MIN_PIECE = 0.3            # un morceau de parole plus court qu'après retrait d'un bruit est écarté (s)
+
+
+def _runs(flags: np.ndarray, step: float) -> list[list[float]]:
+    runs: list[list[float]] = []
+    start = None
+    for index, flag in enumerate(flags):
+        if flag and start is None:
+            start = index
+        elif not flag and start is not None:
+            runs.append([start * step, index * step])
+            start = None
+    if start is not None:
+        runs.append([start * step, len(flags) * step])
+    return runs
+
+
 def activity_segments(loudness, *, step: float = STEP, min_len: float = 0.5, merge_gap: float = 0.45,
                       pad: float = 0.15, duration: float | None = None, snap: bool = False,
-                      short_len: float = 0.0, short_gap: float = 0.0) -> tuple[tuple[float, float], ...]:
-    """Intervalles où le niveau sonore dépasse un seuil adaptatif (plancher de bruit + 9 dB).
+                      short_len: float = 0.0, short_gap: float = 0.0,
+                      voicing=None) -> tuple[tuple[float, float], ...]:
+    """Intervalles de parole : niveau au-dessus d'un seuil adaptatif (plancher de bruit + 9 dB).
 
     ``snap`` déplace chaque coupe vers le point le plus calme de la marge (respiration plutôt que
     milieu de mot). ``short_len``/``short_gap`` recollent un segment très court à son voisin quand
     la pause qui les sépare est brève : on garde alors la pause naturelle au lieu d'un micro-plan.
+
+    ``voicing`` (périodicité par pas, voir ``voicing_curve``) active le retrait des bruits : tout son
+    fort sans voix (toux, claquement, souffle, bruit de bouche) n'est jamais compté comme parole,
+    et un bruit situé entre deux mots coupe le segment au lieu d'y être conservé.
     """
     levels = np.asarray(loudness, dtype=np.float64)
     if not len(levels):
@@ -199,16 +255,18 @@ def activity_segments(loudness, *, step: float = STEP, min_len: float = 0.5, mer
         return ()
     threshold = max(-48.0, floor + max(9.0, (peak - floor) * 0.35))
     active = levels > threshold
-    segments: list[list[float]] = []
-    start = None
-    for index, flag in enumerate(active):
-        if flag and start is None:
-            start = index
-        elif not flag and start is not None:
-            segments.append([start * step, index * step])
-            start = None
-    if start is not None:
-        segments.append([start * step, len(active) * step])
+    noise_runs: list[list[float]] = []
+    if voicing is not None and len(voicing) == len(levels):
+        voiced = np.asarray(voicing) >= VOICED_MIN
+        voiced &= active
+        # Une voyelle dure plus d'une image : un pic isolé n'est pas de la voix.
+        voiced = voiced & (np.roll(voiced, 1) | np.roll(voiced, -1))
+        reach = max(1, int(round(NOISE_REACH / step)))
+        near_voice = np.convolve(voiced.astype(np.int32), np.ones(2 * reach + 1, dtype=np.int32), mode="same") > 0
+        speechlike = active & near_voice
+        noise_runs = _runs(active & ~speechlike, step)
+        active = speechlike
+    segments = _runs(active, step)
     merged: list[list[float]] = []
     for segment in segments:
         if merged and segment[0] - merged[-1][1] <= merge_gap:
@@ -226,6 +284,22 @@ def activity_segments(loudness, *, step: float = STEP, min_len: float = 0.5, mer
         merged = glued
     limit = duration if duration is not None else len(levels) * step
 
+    # Retrait des bruits : un bruit à l'intérieur d'un segment le scinde ; aucune marge n'y déborde.
+    pieces: list[tuple[float, float, float, float]] = []   # début, fin, marge avant, marge après
+    for begin, end in merged:
+        cuts = [(max(begin, ns - NOISE_MARGIN), min(end, ne + NOISE_MARGIN)) for ns, ne in noise_runs
+                if ne + NOISE_MARGIN > begin and ns - NOISE_MARGIN < end]
+        if not cuts:
+            pieces.append((begin, end, pad, pad))
+            continue
+        position, pad_before = begin, pad
+        for cut_start, cut_end in cuts:
+            if cut_start - position >= MIN_PIECE:
+                pieces.append((position, cut_start, pad_before, 0.0))
+            position, pad_before = max(position, cut_end), 0.0
+        if end - position >= MIN_PIECE:
+            pieces.append((position, end, pad_before, pad))
+
     def quietest(center: float, low: float, high: float) -> float:
         a, b = max(0, int(round(low / step))), min(len(levels) - 1, int(round(high / step)))
         if b < a:
@@ -233,21 +307,23 @@ def activity_segments(loudness, *, step: float = STEP, min_len: float = 0.5, mer
         return (a + int(np.argmin(levels[a:b + 1]))) * step
 
     result = []
-    for begin, end in merged:
+    for begin, end, pad_before, pad_after in pieces:
         if end - begin < min_len:
             continue
-        start_cut, end_cut = max(0.0, begin - pad), min(limit, end + pad)
-        if snap and pad > 0.04:
-            reach = min(pad / 2, 0.1)
+        start_cut, end_cut = max(0.0, begin - pad_before), min(limit, end + pad_after)
+        if snap and pad_before > 0.04:
+            reach_s = min(pad_before / 2, 0.1)
             # La coupe reste dans la marge : jamais à l'intérieur de la parole détectée.
-            start_cut = quietest(start_cut, start_cut - reach, min(start_cut + reach, begin - 0.03))
-            end_cut = quietest(end_cut, max(end_cut - reach, end + 0.03), end_cut + reach)
-            start_cut, end_cut = max(0.0, start_cut), min(limit, end_cut)
+            start_cut = max(0.0, quietest(start_cut, start_cut - reach_s, min(start_cut + reach_s, begin - 0.03)))
+        if snap and pad_after > 0.04:
+            reach_s = min(pad_after / 2, 0.1)
+            end_cut = min(limit, quietest(end_cut, max(end_cut - reach_s, end + 0.03), end_cut + reach_s))
         result.append((round(start_cut, 3), round(end_cut, 3)))
-    # Le padding peut faire se chevaucher deux segments voisins : on les recolle.
+    # Le padding peut faire se chevaucher deux segments voisins : on les recolle, sauf autour d'un bruit retiré.
     joined: list[tuple[float, float]] = []
     for begin, end in result:
-        if joined and begin <= joined[-1][1]:
+        if joined and begin <= joined[-1][1] and not any(
+                joined[-1][1] - NOISE_MARGIN <= ne and ns <= begin + NOISE_MARGIN for ns, ne in noise_runs):
             joined[-1] = (joined[-1][0], max(joined[-1][1], end))
         else:
             joined.append((begin, end))
@@ -278,8 +354,9 @@ def analyze_rush(path: str | Path, *, cache_dir: str | Path | None = None, info:
         video_job = pool.submit(_video_curves, source, samples, cancel_event)
         audio_job = pool.submit(_audio_curve, source, samples, cancel_event) if info.has_audio else None
         motion, brightness, sharpness, cuts = video_job.result()
-        loudness, fine = audio_job.result() if audio_job else (np.full(samples, -90.0), np.zeros(0))
-    activity = activity_segments(fine, step=FINE_STEP, duration=info.duration) if info.has_audio else ()
+        loudness, fine, voicing = audio_job.result() if audio_job else (np.full(samples, -90.0), np.zeros(0), np.zeros(0))
+    activity = activity_segments(fine, step=FINE_STEP, duration=info.duration, voicing=voicing) \
+        if info.has_audio else ()
     analysis = RushAnalysis(
         path=str(source), name=source.name, duration=float(info.duration),
         width=int(info.width or 0), height=int(info.height or 0), frame_rate=float(info.frame_rate or 30.0),
@@ -289,6 +366,7 @@ def analyze_rush(path: str | Path, *, cache_dir: str | Path | None = None, info:
         sharpness=tuple(round(float(v), 2) for v in sharpness),
         loudness=tuple(round(float(v), 2) for v in loudness),
         scene_cuts=cuts, activity=activity, fine_loudness=tuple(round(float(v), 1) for v in fine),
+        fine_voicing=tuple(round(float(v), 2) for v in voicing),
     )
     if cache_file is not None:
         cache_file.parent.mkdir(parents=True, exist_ok=True)

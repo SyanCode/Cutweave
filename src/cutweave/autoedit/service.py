@@ -56,6 +56,7 @@ class StudioRequest:
     outro: str = ""
     variants: int = 3
     draft: bool = True
+    clean_noise: bool = True
 
     @property
     def is_draft(self) -> bool:
@@ -258,7 +259,7 @@ def generate_variants(
     report(0.12, "Analyse terminée : construction des variantes")
 
     edit_request = EditRequest(request.mode, width, height, request.duration, request.look, request.music,
-                               request.fit, request.title, request.outro)
+                               request.fit, request.title, request.outro, request.clean_noise)
     has_audio = {analysis.path: analysis.has_audio for analysis in analyses}
     results: list[VariantResult] = []
     share = 0.88 / request.variants

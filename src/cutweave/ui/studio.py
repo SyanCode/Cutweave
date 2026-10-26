@@ -10,7 +10,7 @@ from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPainterPath, QPixmap
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtMultimediaWidgets import QVideoWidget
 from PySide6.QtWidgets import (
-    QButtonGroup, QComboBox, QFileDialog, QFrame, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QListWidget,
+    QButtonGroup, QCheckBox, QComboBox, QFileDialog, QFrame, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QListWidget,
     QListWidgetItem, QMessageBox, QProgressBar, QPushButton, QScrollArea, QSizePolicy, QSlider, QStackedWidget,
     QVBoxLayout, QWidget,
 )
@@ -396,24 +396,37 @@ class StudioPage(QWidget):
         self.preview_mode = Segmented((("⚡ Aperçus rapides", True), ("Qualité finale", False)))
         self.preview_mode.setToolTip("Aperçus rapides : les variantes sont montées en 540p (plusieurs fois plus vite) ; "
                                      "la variante choisie est refaite à la qualité d'export au moment d'exporter.")
+        # Titres facultatifs : désactivés par défaut, et vidés dès qu'on les décoche (rien ne reste d'une fois sur l'autre).
+        self.title_toggle = QCheckBox("Titre d'ouverture")
         self.title_edit = QLineEdit()
         self.title_edit.setPlaceholderText("Ex. : Week-end à Lisbonne")
         self.title_edit.setMaxLength(80)
+        self.title_edit.setEnabled(False)
+        self.outro_toggle = QCheckBox("Texte de fin")
         self.outro_edit = QLineEdit()
         self.outro_edit.setPlaceholderText("Ex. : Abonne-toi !")
         self.outro_edit.setMaxLength(80)
+        self.outro_edit.setEnabled(False)
+        for toggle, edit in ((self.title_toggle, self.title_edit), (self.outro_toggle, self.outro_edit)):
+            toggle.toggled.connect(lambda checked, e=edit: (e.setEnabled(checked), None if checked else e.clear(),
+                                                          e.setFocus() if checked else None))
+        self.clean_noise = QCheckBox("Retirer les bruits : toux, claquements, souffle…")
+        self.clean_noise.setChecked(True)
+        self.clean_noise.setToolTip("Vlog et Face cam : tout son fort qui n'est pas de la voix est coupé, partout. "
+                                    "Le son d'origine des plans d'illustration (sans voix) est aussi coupé.")
         rows = (
             ("Format", self.aspect, "Durée", self.duration),
             ("Musique", self.music, "Look", self.look),
             ("Cadrage", self.fit, "Variantes", self.variant_count),
-            ("Titre d'ouverture", self.title_edit, "Texte de fin", self.outro_edit),
+            (self.title_toggle, self.title_edit, self.outro_toggle, self.outro_edit),
+            ("Son", self.clean_noise, None, None),
             ("Aperçu", self.preview_mode, "Qualité d'export", self.quality),
         )
         for row, (label_a, widget_a, label_b, widget_b) in enumerate(rows):
-            grid.addWidget(_label(label_a, "muted"), row, 0)
+            grid.addWidget(label_a if isinstance(label_a, QWidget) else _label(label_a, "muted"), row, 0)
             grid.addWidget(widget_a, row, 1)
             if label_b:
-                grid.addWidget(_label(label_b, "muted"), row, 2)
+                grid.addWidget(label_b if isinstance(label_b, QWidget) else _label(label_b, "muted"), row, 2)
                 grid.addWidget(widget_b, row, 3)
         settings_layout.addLayout(grid)
         column.addWidget(settings)
@@ -704,8 +717,10 @@ class StudioPage(QWidget):
         return StudioRequest(
             rushes=rushes, mode=self.selected_mode, aspect=self.aspect.value(), quality=self.quality.value(),
             duration=self.duration.currentData(), music=music, look=self.look.currentData(), fit=self.fit.value(),
-            title=self.title_edit.text().strip(), outro=self.outro_edit.text().strip(),
+            title=self.title_edit.text().strip() if self.title_toggle.isChecked() else "",
+            outro=self.outro_edit.text().strip() if self.outro_toggle.isChecked() else "",
             variants=self.variant_count.value(), draft=bool(self.preview_mode.value()),
+            clean_noise=self.clean_noise.isChecked(),
         )
 
     def generate(self):
