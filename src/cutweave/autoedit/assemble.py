@@ -39,7 +39,7 @@ PUNCH_SOFT = 1.08
 # Filtres FFmpeg utilisés par le montage automatique : tous présents dans les builds LGPL.
 REQUIRED_FILTERS = (
     "acrossfade", "aformat", "afade", "alimiter", "anull", "anullsrc", "apad", "aresample", "asetpts", "atempo",
-    "atrim", "boxblur", "colorbalance", "concat", "crop", "curves", "drawbox", "fade", "format", "fps", "hue",
+    "atrim", "colorbalance", "concat", "crop", "curves", "drawbox", "fade", "format", "fps", "gblur", "hue",
     "lutyuv", "noise", "null", "overlay", "scale", "setpts", "setsar", "settb", "split", "tpad", "trim",
     "vignette", "volume", "xfade",
 )
@@ -92,10 +92,12 @@ def shot_video_filter(shot: Shot, width: int, height: int, fit: str) -> str:
         head += f",setpts={1 / shot.speed:.6f}*PTS"
     head += f",fps={FPS}"
     if fit == "fit_blur":
+        small_w, small_h = _even(canvas_w / 8), _even(canvas_h / 8)
         graph = [
             f"{head},split=2[bgsrc][fgsrc]",
-            f"[bgsrc]scale={canvas_w}:{canvas_h}:force_original_aspect_ratio=increase,crop={canvas_w}:{canvas_h},"
-            f"boxblur=luma_radius=24:luma_power=2,{tone(brightness=-0.06)}[bg]",
+            # Flou sur une version réduite (rapide, très doux) puis remise à la taille du canevas.
+            f"[bgsrc]scale={small_w}:{small_h}:force_original_aspect_ratio=increase,crop={small_w}:{small_h},"
+            f"gblur=sigma=3:steps=2,scale={canvas_w}:{canvas_h}:flags=bilinear,{tone(brightness=-0.06)}[bg]",
             f"[fgsrc]scale={canvas_w}:{canvas_h}:force_original_aspect_ratio=decrease,setsar=1[fg]",
             "[bg][fg]overlay=x=(W-w)/2:y=(H-h)/2,setsar=1[canvas]",
         ]

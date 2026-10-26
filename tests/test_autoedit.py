@@ -233,3 +233,20 @@ def test_filter_list_parsing_handles_two_and_three_flag_columns(monkeypatch):
     found = assemble.available_filters("ffmpeg")
     assert {"acrossfade", "xfade", "lutyuv", "scale", "hue", "overlay"} <= found
     assert not any(name in found for name in ("=", "|", "------"))
+
+
+def test_filters_exist_in_a_real_lgpl_ffmpeg_build():
+    """Liste réelle des filtres d'un build BtbN LGPL récent (tests/data) : rien ne doit en sortir."""
+    from pathlib import Path
+
+    from cutweave.autoedit.assemble import REQUIRED_FILTERS, filter_names
+
+    lgpl = set((Path(__file__).parent / "data" / "ffmpeg_lgpl_filters.txt").read_text().split())
+    assert "eq" not in lgpl and "boxblur" not in lgpl and "xfade" in lgpl
+    assert set(REQUIRED_FILTERS) <= lgpl, sorted(set(REQUIRED_FILTERS) - lgpl)
+    # Filtres du pipeline standard (captions, netteté, masques, B-roll, musique, SFX).
+    pipeline = {"ass", "unsharp", "geq", "blend", "gblur", "amix", "aloop", "adelay", "alimiter", "afade",
+                "atrim", "aresample", "aformat", "volume", "overlay", "scale", "crop", "setsar", "setpts", "trim"}
+    assert pipeline <= lgpl, sorted(pipeline - lgpl)
+    for look in library.LOOKS:
+        assert filter_names(look.filters) <= lgpl, look.key
