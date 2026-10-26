@@ -212,3 +212,24 @@ def test_every_filter_used_by_the_studio_exists_in_lgpl_builds():
                 names |= filter_names(shot_audio_filter(shot, True))
     assert "eq" not in names and "hqdn3d" not in names
     assert names <= set(REQUIRED_FILTERS), sorted(names - set(REQUIRED_FILTERS))
+
+
+def test_filter_list_parsing_handles_two_and_three_flag_columns(monkeypatch):
+    from cutweave.autoedit import assemble
+
+    class Result:
+        # Format des FFmpeg récents (2 colonnes de drapeaux) puis des anciens (3 colonnes).
+        stdout = ("Filters:\n  T.. = Timeline support\n  .S. = Slice threading\n  A = Audio input/output\n"
+                  "  | = Source or sink filter\n  ------\n"
+                  " TS aap               AA->A      Apply Affine Projection algorithm.\n"
+                  " .. acrossfade        N->A       Cross fade two input audio streams.\n"
+                  " .S xfade             VV->V      Cross fade one video with another video.\n"
+                  " TS lutyuv            V->V       Compute and apply a lookup table.\n"
+                  " .. scale             V->V       Scale the input video size.\n"
+                  " TSC hue              V->V       Adjust the hue and saturation.\n"
+                  " ... overlay          VV->V      Overlay a video source on top of the input.\n")
+
+    monkeypatch.setattr(assemble, "run_hidden", lambda *a, **k: Result())
+    found = assemble.available_filters("ffmpeg")
+    assert {"acrossfade", "xfade", "lutyuv", "scale", "hue", "overlay"} <= found
+    assert not any(name in found for name in ("=", "|", "------"))

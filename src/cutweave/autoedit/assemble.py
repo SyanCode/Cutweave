@@ -54,7 +54,8 @@ def available_filters(binary: str | None = None) -> set[str]:
                             encoding="utf-8", errors="replace", timeout=20, check=False).stdout
     except (OSError, subprocess.TimeoutExpired):
         return set()
-    return set(re.findall(r"^\s*[A-Z.]{3}\s+(\S+)\s", output, re.M))
+    # Le nombre de colonnes de drapeaux varie selon la version de FFmpeg (3 avant la 8, 2 ensuite).
+    return set(re.findall(r"^\s*[A-Za-z.|]{2,4}\s+([A-Za-z0-9_]+)\s", output, re.M))
 
 
 def missing_filters(binary: str | None = None) -> list[str]:
