@@ -157,3 +157,53 @@ def test_real_decoding_pipeline_removes_coughs(tmp_path):
     assert not any(a < 12.6 and b > 12.05 for a, b in analysis.activity), analysis.activity
     assert not any(a < 16.0 and b > 15.6 for a, b in analysis.activity), analysis.activity
     assert any(a <= 1.2 and b >= 3.8 for a, b in analysis.activity), analysis.activity
+
+
+def test_studio_subtitles_from_a_script_end_to_end(tmp_path):
+    """Voix synthétique dans un vrai MP4 : le script est calé et incrusté dans la variante montée."""
+    import wave
+
+    import numpy as np
+    from synthetic_speech import speak
+
+    from cutweave.subtitles.script import parse_script
+    from test_subtitles import SCRIPT
+
+    signal, truth = speak(parse_script(SCRIPT))
+    wav = tmp_path / "voice.wav"
+    with wave.open(str(wav), "wb") as stream:
+        stream.setnchannels(1)
+        stream.setsampwidth(2)
+        stream.setframerate(8000)
+        stream.writeframes((np.clip(signal, -1, 1) * 32767).astype("<i2").tobytes())
+    clip = tmp_path / "talk.mp4"
+    subprocess.run([ffmpeg_path(), "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
+                    f"testsrc2=size=320x180:rate=10:duration={len(signal) / 8000:.2f}", "-i", str(wav),
+                    "-c:v", "mpeg4", "-c:a", "aac", "-shortest", str(clip)], check=True, capture_output=True)
+    store = ProjectStore.create(tmp_path / "project")
+    store.add_media(clip, probe_media(clip))
+    request = StudioRequest((str(clip),), "vlog", "16:9", 180, None, "none", None, "fill", "Mon titre", "", 1,
+                            draft=False, script=SCRIPT, subtitles="phrase")
+    (result,) = generate_variants(store, request, assets_root=tmp_path / "assets")
+    assert result.subtitle_quality > 0.9
+    media = next(item for item in store.list_media() if item.id == result.media_id)
+    cues = store.get_captions(media.id)
+    title = [cue for cue in cues if cue.text == "Mon titre"]
+    subtitles = [cue for cue in cues if cue.text != "Mon titre"]
+    assert title and title[0].placement == "top" and subtitles
+    spoken = " ".join(cue.text.replace("\n", " ") for cue in subtitles).replace("\xa0", " ").split()
+    assert spoken[:3] == ["Salut", "tout", "le"] and "propre" in spoken[-2]
+    assert all(a.end_ms <= b.start_ms for a, b in zip(subtitles, subtitles[1:]))
+    assert subtitles[-1].end_ms <= (media.duration + 0.1) * 1000
+    assert store.get_caption_preset(media.id).name == "Vlog"
+    assert probe_media(result.preview).has_audio
+
+
+def test_wrong_script_stops_the_montage_with_an_explanation(tmp_path, project):
+    from cutweave.subtitles.service import SubtitleError
+
+    rushes = tuple(str(media.path) for media in rush_media(project))
+    request = StudioRequest(rushes, "vlog", "16:9", 120, None, "none", None, "fill", "", "", 1, draft=False,
+                            script="Un texte qui ne correspond à aucune voix de ces rushs.", subtitles="phrase")
+    with pytest.raises(SubtitleError):
+        generate_variants(project, request, assets_root=tmp_path / "assets")

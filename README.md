@@ -18,6 +18,8 @@ Elle applique à des rushs une chaîne de traitement en trois étapes — visuel
 3. **Clique sur « Générer »** : CUTWEAVE analyse les rushs, compose le montage et propose jusqu'à **3 variantes** (Signature, Énergique, Posée) avec musique, effets sonores, étalonnage et titres.
 4. **Exporte** ta préférée, ou **peaufine-la** dans l'éditeur : tout reste modifiable (titres, musique, volumes, ducking, SFX, cadrage, masques, B-roll…).
 
+Option : colle le **script** de ta vidéo et CUTWEAVE cale chaque mot sur la voix pour produire des **sous-titres précis**, sans aucune reconnaissance vocale (voir [`docs/SOUS_TITRES.md`](docs/SOUS_TITRES.md)).
+
 ---
 
 ## Prérequis
@@ -96,6 +98,17 @@ Réglages facultatifs : format (9:16, 16:9, 1:1), durée, musique (intégrée, l
 
 En ligne de commande : `cutweave-cli auto D:\Projets\Demo D:\Rushs --mode vlog --aspect 16:9 --variants 3`.
 
+## Sous-titres calés sur la voix
+
+CUTWEAVE **ne devine pas les paroles** : retrouver des mots à partir du son demande de la reconnaissance vocale, donc de l'IA, ce que le projet s'interdit. En revanche, quand tu fournis le texte prononcé, il le **date mot à mot** avec du traitement du signal :
+
+1. les syllabes du son sont repérées comme des pics d'énergie dans la bande de la voix, uniquement là où le son est voisé (toux et bruits ne comptent pas) ;
+2. le script est découpé en syllabes (règles de prononciation françaises, nombres en toutes lettres) avec les pauses attendues par la ponctuation ;
+3. une programmation dynamique aligne les deux suites ; les frontières de mots sont placées aux creux d'énergie ;
+4. les mots sont reportés sur le montage, regroupés en cartons lisibles (2 lignes, ~30 caractères, coupés aux fins de phrase et aux silences) ou affichés mot à mot.
+
+Précision mesurée sur voix synthétique : 30 ms avec un script exact, 95 à 140 ms avec des erreurs de syllabes ou des mots manquants. Un script qui ne correspond pas à la voix est refusé avec une explication. Dans l'éditeur (onglet *Captions*), *Aligner un script…* sous-titre n'importe quel média et *Plages de parole* prépare des segments à compléter. Limites et détails : [`docs/SOUS_TITRES.md`](docs/SOUS_TITRES.md).
+
 ## Bibliothèque d'actifs intégrés
 
 Tous les actifs sont **synthétisés localement** au premier usage (numpy : oscillateurs, bruit à graine fixe, enveloppes, filtres et réverbération par convolution) dans `%APPDATA%\CUTWEAVE\assets\v1` — aucun téléchargement, libres de droits.
@@ -162,7 +175,7 @@ Un projet est un dossier contenant `project.json`, la base `cutweave.sqlite3`, `
 python -m pytest
 ```
 
-157 tests : modèles et validation, parsing de captions, montage automatique (analyse, tempo, plans déterministes de chaque style, variantes et export de bout en bout), actifs synthétisés, presets, cache, orchestrateur, règles, tracking sur vidéo synthétique, rendus FFmpeg réels (cadrage, netteté, captions, masques, B-roll, musique, ducking, SFX), pipeline complet bout-en-bout depuis un projet, annulation, CLI, et démarrage de l'interface en mode hors écran (`QT_QPA_PLATFORM=offscreen`). Les médias de test sont générés à la volée (`lavfi`) ; les tests FFmpeg sont ignorés si FFmpeg est absent.
+223 tests : modèles et validation, parsing de captions, montage automatique (analyse, tempo, sous-titres calés sur la voix, plans déterministes de chaque style, variantes et export de bout en bout), actifs synthétisés, presets, cache, orchestrateur, règles, tracking sur vidéo synthétique, rendus FFmpeg réels (cadrage, netteté, captions, masques, B-roll, musique, ducking, SFX), pipeline complet bout-en-bout depuis un projet, annulation, CLI, et démarrage de l'interface en mode hors écran (`QT_QPA_PLATFORM=offscreen`). Les médias de test sont générés à la volée (`lavfi`) ; les tests FFmpeg sont ignorés si FFmpeg est absent.
 
 ## Construction d'un exécutable Windows
 
@@ -187,6 +200,12 @@ Le script produit `dist\CUTWEAVE\CUTWEAVE.exe` (interface) et `dist\CUTWEAVE\cut
 ### Limites des trackers classiques
 
 Les trackers suivent une **zone de pixels** choisie par l'utilisateur ; ils ne reconnaissent rien. Ils perdent la cible en cas d'occlusion, de sortie de cadre, de flou de mouvement, de changement d'échelle rapide ou d'éclairage. CSRT est le plus précis et le plus lent ; KCF est rapide mais tolère mal les changements d'échelle ; MOSSE est très rapide et le plus fragile. Les pertes sont enregistrées (`bbox: null`), ignorées lors de la conversion en keyframes et signalées dans le journal.
+
+## Contribuer
+
+Le projet est libre (MIT) et ouvert aux contributions : voir [`CONTRIBUTING.md`](CONTRIBUTING.md) (principes : aucune IA, 100 % local, déterminisme), [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md), [`SECURITY.md`](SECURITY.md) et le [journal des changements](CHANGELOG.md). Le menu *Aide > À propos et diagnostic* produit un rapport copiable (versions, FFmpeg, encodeurs) à joindre aux tickets, sans aucune donnée personnelle.
+
+Raccourcis : `Ctrl+N` nouveau projet, `Ctrl+O` ouvrir, `Ctrl+1/2/3` Studio / Éditeur / Bibliothèque, `Ctrl+B` réduire le menu, `Ctrl+E` exporter la variante, `Espace` lecture, `Ctrl+,` paramètres, `F1` à propos. Les vidéos peuvent être déposées n'importe où dans la fenêtre.
 
 ## Licences
 

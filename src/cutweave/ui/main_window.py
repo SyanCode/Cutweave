@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import json
+import os
 import threading
 import uuid
 from dataclasses import replace
@@ -49,7 +50,10 @@ from cutweave.ui.studio import StudioPage, scroll_area
 from cutweave.ui.widgets import apply_icon, button as make_button, tidy_page
 from cutweave.ui import icons, theme
 from cutweave.ui.theme import apply_theme
-from cutweave.ui.dialogs import PipelinePanel, SettingsDialog, TaskHistoryDialog
+from cutweave.subtitles.service import cues_for_media_file, speech_skeleton
+from cutweave.ui.branding import app_icon, logo_pixmap
+from cutweave.ui.dialogs import AboutDialog, PipelinePanel, ScriptDialog, SettingsDialog, TaskHistoryDialog
+from cutweave.ui.toast import ToastHost
 from cutweave.ui.rules_panel import RulesPanel
 from cutweave.stages.composition.masking import MaskKeyframe, MaskRegion, MaskValidationError
 from cutweave.stages.visual.tracking import (
@@ -166,6 +170,8 @@ class TaskWorker(QObject):
 
 
 class MainWindow(QMainWindow):
+    healthReady = Signal(object)
+
     def __init__(self):
         super().__init__()
         self.store: ProjectStore | None = None
@@ -182,6 +188,9 @@ class MainWindow(QMainWindow):
         self._log_handler = QtLogHandler(self.log_bridge)
         logging.getLogger("cutweave").addHandler(self._log_handler)
         self.setWindowTitle("CUTWEAVE — Montage vidéo automatique")
+        self.setWindowIcon(app_icon())
+        self.setAcceptDrops(True)
+        self.toasts = ToastHost(self)
         self.setMinimumSize(900, 600)
         self._geometry_store = QSettings(str(config_dir() / "window.ini"), QSettings.Format.IniFormat)
         saved = self._geometry_store.value("geometry")
@@ -192,6 +201,10 @@ class MainWindow(QMainWindow):
         self._build_ui()
         self._build_menu()
         self._set_project_state(False)
+        self.studio.refresh()
+        self.healthReady.connect(self.studio.set_issues)
+        if not os.environ.get("CUTWEAVE_NO_HEALTHCHECK"):
+            QTimer.singleShot(300, self._start_health_check)
 
     def _build_ui(self):
         root = QWidget()
@@ -270,6 +283,17 @@ class MainWindow(QMainWindow):
         captions_page = QWidget()
         captions_layout = QVBoxLayout(captions_page)
         captions_layout.addWidget(QLabel("Textes affichés à l'écran : édite les temps et le texte directement dans le tableau."))
+        smart_row = QHBoxLayout()
+        self.caption_align_button = make_button("Aligner un script…", "primary", "wand")
+        self.caption_align_button.setToolTip("Caler un texte prononcé sur la voix de ce média (sans IA : syllabes et pauses).")
+        self.caption_align_button.clicked.connect(self.align_script_to_media)
+        smart_row.addWidget(self.caption_align_button)
+        self.caption_skeleton_button = make_button("Plages de parole", None, "mic")
+        self.caption_skeleton_button.setToolTip("Crée un segment « … » à chaque passage où quelqu'un parle : "
+                                                "les temps sont prêts, il ne reste qu'à écrire le texte.")
+        self.caption_skeleton_button.clicked.connect(self.create_speech_skeleton)
+        smart_row.addWidget(self.caption_skeleton_button)
+        captions_layout.addLayout(smart_row)
         caption_header = QHBoxLayout()
         caption_header.addStretch(1)
         self.caption_import_button = QPushButton("Importer…")
@@ -703,9 +727,14 @@ class MainWindow(QMainWindow):
         layout.setSpacing(4)
         head = QHBoxLayout()
         head.setContentsMargins(18, 0, 10, 0)
+        logo = QLabel()
+        logo.setPixmap(logo_pixmap(28))
+        logo.setFixedSize(28, 28)
+        head.addWidget(logo)
         self.brand = QLabel("CUTWEAVE")
-        self.brand.setStyleSheet("font-size: 15pt; font-weight: 800; color: #ffffff;")
+        self.brand.setStyleSheet("font-size: 14pt; font-weight: 800; color: #ffffff; padding-left: 4px;")
         head.addWidget(self.brand, 1)
+        self.sidebar_logo = logo
         self.sidebar_toggle = make_button("", "ghost", "panel", tooltip="Réduire / agrandir le menu")
         self.sidebar_toggle.setFixedSize(34, 34)
         self.sidebar_toggle.clicked.connect(self._toggle_sidebar)
@@ -788,6 +817,18 @@ class MainWindow(QMainWindow):
         self._sidebar_auto: bool | None = None
         self._apply_sidebar_mode(False)
 
+    def _start_health_check(self):
+        """Vérifie FFmpeg, ses filtres et les encodeurs en arrière-plan, sans retarder l'ouverture de la fenêtre."""
+        def work():
+            try:
+                from cutweave.core.health import environment_issues
+
+                self.healthReady.emit(environment_issues())
+            except Exception:  # un diagnostic raté ne doit jamais gêner l'utilisateur
+                LOGGER.exception("Vérification de l'environnement impossible")
+
+        threading.Thread(target=work, daemon=True).start()
+
     def _toggle_sidebar(self):
         self._sidebar_forced = not bool(self._sidebar_compact)
         self._apply_sidebar_mode(self._sidebar_forced)
@@ -799,6 +840,7 @@ class MainWindow(QMainWindow):
         self._sidebar_compact, self._sidebar_short = compact, short
         self.sidebar_frame.setFixedWidth(68 if compact else 232)
         self.brand.setVisible(not compact)
+        self.sidebar_logo.setVisible(not compact)
         self.tagline.setVisible(not compact)
         self.project_box.setVisible(not compact)
         self.project_compact.setVisible(compact)
@@ -836,30 +878,69 @@ class MainWindow(QMainWindow):
         self._apply_sidebar_mode(auto if self._sidebar_forced is None else self._sidebar_forced)
 
     def _build_menu(self):
+        from PySide6.QtGui import QKeySequence
+
+        def action(menu, text, handler, shortcut=None):
+            entry = QAction(text, self)
+            entry.triggered.connect(lambda _checked=False: handler())
+            if shortcut:
+                entry.setShortcut(QKeySequence(shortcut))
+            menu.addAction(entry)
+            return entry
+
         project_menu = self.menuBar().addMenu("Projet")
-        new_action = QAction("Nouveau…", self)
-        new_action.triggered.connect(self.new_project)
-        open_action = QAction("Ouvrir…", self)
-        open_action.triggered.connect(self.open_project)
-        project_menu.addAction(new_action)
-        project_menu.addAction(open_action)
+        action(project_menu, "Nouveau…", self.new_project, "Ctrl+N")
+        action(project_menu, "Ouvrir…", self.open_project, "Ctrl+O")
+        self.recent_menu = project_menu.addMenu("Projets récents")
+        self._refresh_recent_menu()
         project_menu.addSeparator()
-        close_action = QAction("Fermer le projet", self)
-        close_action.triggered.connect(self.close_project)
-        project_menu.addAction(close_action)
-        relink_action = QAction("Relier les médias manquants…", self)
-        relink_action.triggered.connect(self.relink_missing_media)
-        project_menu.addAction(relink_action)
+        action(project_menu, "Fermer le projet", self.close_project, "Ctrl+W")
+        action(project_menu, "Relier les médias manquants…", self.relink_missing_media)
         project_menu.addSeparator()
-        purge_action = QAction("Purger le cache du projet", self)
-        purge_action.triggered.connect(self.purge_cache)
-        project_menu.addAction(purge_action)
+        action(project_menu, "Purger le cache du projet", self.purge_cache)
+        project_menu.addSeparator()
+        action(project_menu, "Quitter", self.close, "Ctrl+Q")
+        view_menu = self.menuBar().addMenu("Affichage")
+        action(view_menu, "Studio", lambda: self.pages.setCurrentIndex(0), "Ctrl+1")
+        action(view_menu, "Éditeur", lambda: self.pages.setCurrentIndex(1), "Ctrl+2")
+        action(view_menu, "Bibliothèque", lambda: (self.pages.setCurrentIndex(2), self.library_page.refresh()), "Ctrl+3")
+        view_menu.addSeparator()
+        action(view_menu, "Réduire / agrandir le menu", self._toggle_sidebar, "Ctrl+B")
         tools_menu = self.menuBar().addMenu("Outils")
-        for label, handler in (("Paramètres…", self.show_settings), ("Historique des tâches…", self.show_task_history),
-                               ("Ouvrir le dossier des journaux", self.open_log_folder)):
-            action = QAction(label, self)
-            action.triggered.connect(handler)
-            tools_menu.addAction(action)
+        action(tools_menu, "Paramètres…", self.show_settings, "Ctrl+,")
+        action(tools_menu, "Historique des tâches…", self.show_task_history)
+        action(tools_menu, "Ouvrir le dossier des journaux", self.open_log_folder)
+        help_menu = self.menuBar().addMenu("Aide")
+        action(help_menu, "À propos et diagnostic…", self.show_about, "F1")
+
+    def _refresh_recent_menu(self):
+        self.recent_menu.clear()
+        recent = [path for path in self.app_settings.recent() if Path(path, "project.json").is_file()]
+        self.recent_menu.setEnabled(bool(recent))
+        for path in recent:
+            entry = QAction(f"{Path(path).name}    —    {path}", self)
+            entry.triggered.connect(lambda _checked=False, p=path: self.open_project_path(p))
+            self.recent_menu.addAction(entry)
+
+    def open_project_path(self, path: str):
+        if self.thread is not None:
+            QMessageBox.information(self, "Traitement en cours", "Attendez la fin du traitement en cours.")
+            return
+        try:
+            store = ProjectStore(Path(path))
+        except Exception as exc:
+            self.app_settings.forget_recent(path)
+            self._save_settings()
+            self._refresh_recent_menu()
+            QMessageBox.critical(self, "Ouverture impossible", str(exc))
+            return
+        self._load_project(store)
+
+    def _save_settings(self):
+        try:
+            self.app_settings.save()
+        except OSError as exc:
+            LOGGER.warning("Réglages non enregistrés : %s", exc)
 
     def _set_project_state(self, active: bool):
         self.import_button.setEnabled(active)
@@ -953,6 +1034,8 @@ class MainWindow(QMainWindow):
         self._update_mask_actions()
         self._broll_selection_changed()
         self.mask_from_track_button.setEnabled(self.store is not None and bool(self.media) and not active)
+        for caption_button in (self.caption_align_button, self.caption_skeleton_button):
+            caption_button.setEnabled(self.store is not None and bool(self.media) and not active)
         self.rules_panel.set_active(self.store is not None and not active)
         self.pipeline_panel.set_busy(active)
         self.studio.set_busy(active)
@@ -1004,6 +1087,9 @@ class MainWindow(QMainWindow):
         self.media = store.list_media()
         self.project_label.setText(store.manifest["name"])
         self.project_label.setToolTip(str(store.root))
+        self.app_settings.add_recent(store.root)
+        self._save_settings()
+        self._refresh_recent_menu()
         self.sidebar_project.setText(store.manifest["name"])
         self.sidebar_project.setToolTip(str(store.root))
         self._populate_table()
@@ -1398,7 +1484,10 @@ class MainWindow(QMainWindow):
             for row, cue in enumerate(cues):
                 values = [self._caption_time(cue.start_ms), self._caption_time(cue.end_ms), cue.text]
                 for column, value in enumerate(values):
-                    self.caption_table.setItem(row, column, QTableWidgetItem(value))
+                    cell = QTableWidgetItem(value)
+                    if column == 2:
+                        cell.setData(Qt.ItemDataRole.UserRole, cue.placement)
+                    self.caption_table.setItem(row, column, cell)
             self.caption_table.resizeColumnsToContents()
             self._update_caption_actions()
         finally:
@@ -1439,7 +1528,8 @@ class MainWindow(QMainWindow):
             for row in range(self.caption_table.rowCount()):
                 start = parse_timestamp(self.caption_table.item(row, 0).text(), format="vtt")
                 end = parse_timestamp(self.caption_table.item(row, 1).text(), format="vtt")
-                cue = CaptionCue(start, end, self.caption_table.item(row, 2).text())
+                cue = CaptionCue(start, end, self.caption_table.item(row, 2).text(),
+                                 self.caption_table.item(row, 2).data(Qt.ItemDataRole.UserRole) or "")
                 cue.validate()
                 cues.append(cue)
             self.store.set_captions(media.id, cues)
@@ -2609,9 +2699,29 @@ class MainWindow(QMainWindow):
             player.stop()
             player.setSource(QUrl())
 
-    def notify(self, message: str):
+    def notify(self, message: str, level: str = "info"):
         self._append_log(message)
         self.statusBar().showMessage(message, 9000)
+        if hasattr(self, "toasts"):
+            self.toasts.show(message, level)
+
+    def show_about(self):
+        AboutDialog(self).exec()      # le diagnostic ne contient aucun chemin de projet ni de vidéo
+
+    # --- Glisser-déposer sur toute la fenêtre ---------------------------------------------------------
+
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+
+    def dropEvent(self, event):
+        paths = [url.toLocalFile() for url in event.mimeData().urls() if url.isLocalFile()]
+        if not paths:
+            return
+        event.acceptProposedAction()
+        self.pages.setCurrentIndex(0)
+        self.studio.pages.setCurrentIndex(0)
+        self.studio.add_paths(paths)
 
     def ensure_project(self) -> bool:
         """Crée automatiquement un projet dans le dossier des projets si aucun n'est ouvert."""
@@ -2634,6 +2744,55 @@ class MainWindow(QMainWindow):
             return
         if self.ensure_project():
             self._start_import(paths)
+
+    def align_script_to_media(self):
+        media = self._selected_media()
+        if not media or not self.store:
+            QMessageBox.information(self, "Sélection requise", "Sélectionnez une vidéo à sous-titrer.")
+            return
+        if media.missing:
+            QMessageBox.warning(self, "Fichier manquant", "Le fichier de ce média est introuvable.")
+            return
+        dialog = ScriptDialog(self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        script, grouping, replace_existing = dialog.script, dialog.grouping.value(), dialog.replace.isChecked()
+        store = self.store
+
+        def operation(progress, cancel_event):
+            progress("Analyse de la voix et alignement du script…")
+            cues, result = cues_for_media_file(media.path, script, grouping, cache_dir=store.cache_root / "analysis",
+                                               cancel_event=cancel_event)
+            kept = () if replace_existing else store.get_captions(media.id)
+            store.set_captions(media.id, sorted([*kept, *cues]))
+            return len(cues), result
+
+        def done(outcome):
+            count, result = outcome
+            self._populate_captions()
+            self.notify(f"{count} sous-titres créés ({result.quality:.0%} de fiabilité, "
+                        f"{result.matched_ratio:.0%} des syllabes appariées).")
+
+        self._run_task(operation, done)
+
+    def create_speech_skeleton(self):
+        media = self._selected_media()
+        if not media or not self.store or media.missing:
+            QMessageBox.information(self, "Sélection requise", "Sélectionnez une vidéo disponible.")
+            return
+        store = self.store
+
+        def operation(progress, cancel_event):
+            progress("Détection des passages parlés…")
+            cues = speech_skeleton(media.path, cache_dir=store.cache_root / "analysis", cancel_event=cancel_event)
+            store.set_captions(media.id, sorted([*store.get_captions(media.id), *cues]))
+            return len(cues)
+
+        def done(count):
+            self._populate_captions()
+            self.notify(f"{count} plages de parole créées : remplace les « … » par le texte prononcé.")
+
+        self._run_task(operation, done)
 
     def media_changed(self):
         """Recharge les vues après une modification du projet faite hors de l'éditeur."""

@@ -12,6 +12,8 @@ Set-Location (Split-Path -Parent $PSScriptRoot)
 & $Python -m PyInstaller --noconfirm --clean --windowed --name CUTWEAVE `
     --paths "$PWD\src" --specpath build `
     --collect-submodules cutweave `
+    --icon "$PWD\src\cutweave\ui\resources\cutweave.ico" `
+    --add-data "$PWD\src\cutweave\ui\resources;cutweave\ui\resources" `
     --exclude-module tkinter --exclude-module PySide6.QtWebEngineCore --exclude-module PySide6.QtWebEngineWidgets `
     --exclude-module PySide6.QtPdf --exclude-module PySide6.Qt3DCore --exclude-module PySide6.QtQuick3D `
     "$PWD\src\cutweave\__main__.py"

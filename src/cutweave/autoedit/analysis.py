@@ -32,8 +32,10 @@ from cutweave.media.render import ffmpeg_path
 
 LOGGER = logging.getLogger("cutweave.autoedit")
 STEP = 0.25
-ANALYSIS_VERSION = 4
+ANALYSIS_VERSION = 5
 FINE_STEP = 0.05
+ENV_STEP = 0.02            # pas de l'enveloppe syllabique (s)
+ENV_BAND = (250.0, 2500.0)  # bande de la voix utilisée pour repérer les syllabes (Hz)
 FRAME_W, FRAME_H = 96, 54
 AUDIO_RATE = 8000
 
@@ -60,6 +62,7 @@ class RushAnalysis:
     activity: tuple[tuple[float, float], ...]
     fine_loudness: tuple[float, ...] = ()     # niveau sonore par pas de FINE_STEP (précision des coupes)
     fine_voicing: tuple[float, ...] = ()      # périodicité (0..1) par pas de FINE_STEP : voix vs bruit
+    syllable_env: tuple[float, ...] = ()      # énergie 250–2500 Hz (dB) par pas de ENV_STEP : noyaux de syllabes
 
     @property
     def samples(self) -> int:
@@ -86,6 +89,7 @@ class RushAnalysis:
         data["activity"] = tuple((float(a), float(b)) for a, b in data["activity"])
         data["fine_loudness"] = tuple(float(value) for value in data.get("fine_loudness", ()))
         data["fine_voicing"] = tuple(float(value) for value in data.get("fine_voicing", ()))
+        data["syllable_env"] = tuple(float(value) for value in data.get("syllable_env", ()))
         return cls(**data)
 
 
@@ -182,18 +186,31 @@ def voicing_curve(blocks: np.ndarray) -> np.ndarray:
     return result
 
 
-def _audio_curve(path: Path, samples: int, cancel_event):
-    """Retourne (niveau grossier par STEP, niveau fin par FINE_STEP, périodicité fine) en dBFS / 0..1."""
-    binary = ffmpeg_path()
-    command = [binary, "-hide_banner", "-loglevel", "error", "-i", str(path), "-vn", "-sn", "-dn",
-               "-ac", "1", "-ar", str(AUDIO_RATE), "-f", "s16le", "pipe:1"]
-    raw = _run_pipe(command, cancel_event)
-    pcm = np.frombuffer(raw[: len(raw) // 2 * 2], dtype="<i2").astype(np.float32) / 32768.0
+def syllable_envelope(pcm: np.ndarray) -> np.ndarray:
+    """Énergie (dB) dans la bande de la voix, une valeur par ENV_STEP : chaque voyelle y forme un pic."""
+    window, hop = 256, int(AUDIO_RATE * ENV_STEP)
+    if len(pcm) < window:
+        return np.zeros(0)
+    taper = np.hanning(window).astype(np.float32)
+    freqs = np.fft.rfftfreq(window, 1 / AUDIO_RATE)
+    band = (freqs >= ENV_BAND[0]) & (freqs <= ENV_BAND[1])
+    frames = (len(pcm) - window) // hop + 1
+    result = np.empty(frames, dtype=np.float64)
+    for start in range(0, frames, 16384):
+        stop = min(frames, start + 16384)
+        index = np.arange(start, stop)[:, None] * hop + np.arange(window)[None, :]
+        spectrum = np.abs(np.fft.rfft(pcm[index] * taper, axis=1)) ** 2
+        result[start:stop] = 10 * np.log10(np.maximum(spectrum[:, band].sum(axis=1) / window, 1e-12))
+    return result
+
+
+def audio_features(pcm: np.ndarray, samples: int):
+    """Courbes sonores d'un signal mono à AUDIO_RATE : (niveau grossier, niveau fin, périodicité, enveloppe)."""
     window = int(AUDIO_RATE * FINE_STEP)
     count = len(pcm) // window
     fine_samples = samples * int(round(STEP / FINE_STEP))
     if count == 0:
-        return np.full(samples, -90.0), np.full(fine_samples, -90.0), np.zeros(fine_samples)
+        return np.full(samples, -90.0), np.full(fine_samples, -90.0), np.zeros(fine_samples), np.zeros(0)
     blocks = pcm[: count * window].reshape(count, window)
     power = np.mean(blocks ** 2, axis=1)
     voicing = voicing_curve(blocks)
@@ -201,7 +218,17 @@ def _audio_curve(path: Path, samples: int, cancel_event):
     group = int(round(STEP / FINE_STEP))
     usable = len(power) // group * group
     coarse = 10 * np.log10(np.maximum(power[:usable].reshape(-1, group).mean(axis=1), 1e-10))
-    return _fit(coarse, samples, fill=-90.0), _fit(fine, fine_samples, fill=-90.0), _fit(voicing, fine_samples, fill=0.0)
+    return (_fit(coarse, samples, fill=-90.0), _fit(fine, fine_samples, fill=-90.0),
+            _fit(voicing, fine_samples, fill=0.0), syllable_envelope(pcm))
+
+
+def _audio_curve(path: Path, samples: int, cancel_event):
+    binary = ffmpeg_path()
+    command = [binary, "-hide_banner", "-loglevel", "error", "-i", str(path), "-vn", "-sn", "-dn",
+               "-ac", "1", "-ar", str(AUDIO_RATE), "-f", "s16le", "pipe:1"]
+    raw = _run_pipe(command, cancel_event)
+    pcm = np.frombuffer(raw[: len(raw) // 2 * 2], dtype="<i2").astype(np.float32) / 32768.0
+    return audio_features(pcm, samples)
 
 
 def _fit(values, samples: int, fill: float | None = None) -> np.ndarray:
@@ -354,7 +381,8 @@ def analyze_rush(path: str | Path, *, cache_dir: str | Path | None = None, info:
         video_job = pool.submit(_video_curves, source, samples, cancel_event)
         audio_job = pool.submit(_audio_curve, source, samples, cancel_event) if info.has_audio else None
         motion, brightness, sharpness, cuts = video_job.result()
-        loudness, fine, voicing = audio_job.result() if audio_job else (np.full(samples, -90.0), np.zeros(0), np.zeros(0))
+        loudness, fine, voicing, envelope = audio_job.result() if audio_job else (
+            np.full(samples, -90.0), np.zeros(0), np.zeros(0), np.zeros(0))
     activity = activity_segments(fine, step=FINE_STEP, duration=info.duration, voicing=voicing) \
         if info.has_audio else ()
     analysis = RushAnalysis(
@@ -367,6 +395,7 @@ def analyze_rush(path: str | Path, *, cache_dir: str | Path | None = None, info:
         loudness=tuple(round(float(v), 2) for v in loudness),
         scene_cuts=cuts, activity=activity, fine_loudness=tuple(round(float(v), 1) for v in fine),
         fine_voicing=tuple(round(float(v), 2) for v in voicing),
+        syllable_env=tuple(round(float(v), 1) for v in envelope),
     )
     if cache_file is not None:
         cache_file.parent.mkdir(parents=True, exist_ok=True)

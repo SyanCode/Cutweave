@@ -11,7 +11,7 @@ from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtMultimediaWidgets import QVideoWidget
 from PySide6.QtWidgets import (
     QBoxLayout, QCheckBox, QComboBox, QFileDialog, QFrame, QHBoxLayout, QLabel, QLineEdit, QListWidget,
-    QListWidgetItem, QMessageBox, QProgressBar, QScrollArea, QSizePolicy, QSlider, QStackedWidget, QVBoxLayout,
+    QListWidgetItem, QMessageBox, QPlainTextEdit, QProgressBar, QScrollArea, QSizePolicy, QSlider, QStackedWidget, QVBoxLayout,
     QWidget,
 )
 
@@ -225,6 +225,8 @@ class VariantCard(ClickableCard):
         facts = [f"{minutes}:{seconds:02d}", f"{result.shots} plans", f"♪ {result.music_title}", result.look_title]
         if result.draft:
             facts.append("aperçu 540p")
+        if result.subtitle_quality >= 0:
+            facts.append(f"sous-titres {result.subtitle_quality:.0%}")
         text.addWidget(label("  ·  ".join(facts), "faint", wrap=True))
         text.addStretch()
         layout.addLayout(text, 1)
@@ -256,6 +258,11 @@ class StudioPage(QWidget):
         self.pages.addWidget(self._build_results())
         self._select_mode(self.selected_mode)
         self._update_cta()
+        from PySide6.QtGui import QKeySequence, QShortcut
+
+        QShortcut(QKeySequence("Space"), self, activated=self._space_pressed)
+        QShortcut(QKeySequence("Ctrl+E"), self, activated=lambda: self.export_current()
+                  if self.pages.currentIndex() == 2 else None)
 
     # --- Création -------------------------------------------------------------------------------
 
@@ -275,6 +282,22 @@ class StudioPage(QWidget):
         self.history_button.setVisible(False)
         header.addWidget(self.history_button, 0, Qt.AlignmentFlag.AlignBottom)
         column.addLayout(header)
+
+        self.health_box = QFrame()
+        self.health_box.setProperty("card", "true")
+        self.health_layout = QVBoxLayout(self.health_box)
+        self.health_layout.setContentsMargins(16, 12, 16, 12)
+        self.health_layout.setSpacing(8)
+        self.health_box.setVisible(False)
+        column.addWidget(self.health_box)
+
+        self.recent_box, recent_layout = card(padding=14, spacing=8)
+        recent_layout.addWidget(label("Projets récents", "h3"))
+        self.recent_list = QVBoxLayout()
+        self.recent_list.setSpacing(4)
+        recent_layout.addLayout(self.recent_list)
+        self.recent_box.setVisible(False)
+        column.addWidget(self.recent_box)
 
         column.addWidget(label("ÉTAPE 1 · TES RUSHS", "step"))
         self.drop_zone = DropZone()
@@ -374,6 +397,36 @@ class StudioPage(QWidget):
         settings_layout.addWidget(self.settings_form)
         column.addWidget(settings)
 
+        column.addWidget(label("ÉTAPE 4 · SOUS-TITRES (FACULTATIF)", "step"))
+        subtitles, subtitles_layout = card()
+        head = QHBoxLayout()
+        self.subtitle_toggle = QCheckBox("Ajouter des sous-titres calés sur la voix")
+        self.subtitle_toggle.setCursor(Qt.CursorShape.PointingHandCursor)
+        head.addWidget(self.subtitle_toggle, 1)
+        self.subtitle_grouping = Segmented((("Phrases", "phrase"), ("Mot à mot", "words")))
+        head.addWidget(self.subtitle_grouping)
+        subtitles_layout.addLayout(head)
+        self.script_edit = QPlainTextEdit()
+        self.script_edit.setPlaceholderText("Colle ici le texte prononcé, dans l'ordre des rushs…\n"
+                                            "Les indications [entre crochets] sont ignorées.")
+        self.script_edit.setMinimumHeight(120)
+        self.script_edit.setMaximumHeight(220)
+        subtitles_layout.addWidget(self.script_edit)
+        script_row = QHBoxLayout()
+        self.script_import = button("Importer un script…", None, "upload")
+        self.script_import.clicked.connect(self.import_script)
+        script_row.addWidget(self.script_import)
+        self.script_hint = label("", "faint", wrap=True)
+        script_row.addWidget(self.script_hint, 1)
+        subtitles_layout.addLayout(script_row)
+        subtitles_layout.addWidget(label(
+            "Sans IA : CUTWEAVE ne reconnaît pas la parole. Il cale ton texte sur la voix (syllabes et pauses) pour "
+            "dater chaque mot avec précision. Un fichier .txt, .srt ou .vtt peut servir de script.", "faint", wrap=True))
+        column.addWidget(subtitles)
+        self.subtitle_toggle.toggled.connect(self._subtitle_state_changed)
+        self.script_edit.textChanged.connect(self._script_changed)
+        self._subtitle_state_changed(False)
+
         self.cta_box = QBoxLayout(QBoxLayout.Direction.LeftToRight)
         self.cta_box.setSpacing(16)
         self.cta_hint = label("", "muted", wrap=True)
@@ -386,6 +439,85 @@ class StudioPage(QWidget):
         column.addStretch()
         self._create_body = body
         return scroll_area(body)
+
+    def _subtitle_state_changed(self, checked: bool):
+        for widget in (self.script_edit, self.script_import, self.subtitle_grouping):
+            widget.setEnabled(checked)
+        self._update_cta()
+
+    def _script_changed(self):
+        text = self.script_edit.toPlainText()
+        if text.strip() and not self.subtitle_toggle.isChecked():
+            self.subtitle_toggle.setChecked(True)
+        words = len(text.split())
+        self.script_hint.setText(f"{words} mot{'s' if words > 1 else ''}" if words else "")
+        self._update_cta()
+
+    def import_script(self):
+        from cutweave.subtitles.script import script_from_file
+
+        path, _ = QFileDialog.getOpenFileName(self, "Importer un script", "",
+                                              "Texte et sous-titres (*.txt *.md *.srt *.vtt *.ass);;Tous les fichiers (*.*)")
+        if not path:
+            return
+        try:
+            self.script_edit.setPlainText(script_from_file(path))
+        except Exception as exc:  # fichier illisible ou sous-titres invalides
+            QMessageBox.warning(self, "Import impossible", str(exc))
+
+    def set_issues(self, issues):
+        """Bandeau d'état de l'environnement (FFmpeg absent, filtres manquants, encodage logiciel)."""
+        while self.health_layout.count():
+            item = self.health_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+            elif item.layout():
+                while item.layout().count():
+                    child = item.layout().takeAt(0)
+                    if child.widget():
+                        child.widget().deleteLater()
+        colors = {"error": theme.DANGER, "warning": "#ffb020", "info": theme.MUTED}
+        glyph = {"error": "alert", "warning": "alert", "info": "zap"}
+        for issue in issues:
+            row = QHBoxLayout()
+            row.setSpacing(10)
+            mark = QLabel()
+            mark.setPixmap(icons.pixmap(glyph.get(issue.level, "alert"), colors.get(issue.level, theme.MUTED), 18))
+            mark.setFixedSize(20, 20)
+            row.addWidget(mark, 0, Qt.AlignmentFlag.AlignTop)
+            text = QVBoxLayout()
+            text.setSpacing(2)
+            text.addWidget(label(issue.title, "h3"))
+            text.addWidget(label(issue.detail, "muted", wrap=True))
+            row.addLayout(text, 1)
+            if issue.action == "settings":
+                open_settings = button("Paramètres", None, "settings")
+                open_settings.clicked.connect(self.main.show_settings)
+                row.addWidget(open_settings, 0, Qt.AlignmentFlag.AlignTop)
+            self.health_layout.addLayout(row)
+        self.health_box.setVisible(bool(issues))
+
+    def _refresh_recent(self):
+        while self.recent_list.count():
+            item = self.recent_list.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        recent = [path for path in self.main.app_settings.recent() if (Path(path) / "project.json").is_file()][:5]
+        for path in recent:
+            entry = button(f"{Path(path).name}   ·   {path}", "ghost", "folder")
+            entry.setStyleSheet("text-align: left;")
+            entry.clicked.connect(lambda _c=False, p=path: self.main.open_project_path(p))
+            self.recent_list.addWidget(entry)
+        self.recent_box.setVisible(bool(recent) and self.main.store is None)
+
+    def _space_pressed(self):
+        from PySide6.QtWidgets import QAbstractButton, QApplication, QComboBox as _Combo, QLineEdit as _Line, QPlainTextEdit as _Plain
+
+        focus = QApplication.focusWidget()
+        if isinstance(focus, (_Line, _Plain, _Combo, QAbstractButton)):
+            return
+        if self.main.pages.currentIndex() == 0 and self.pages.currentIndex() == 2 and self.current is not None:
+            self.toggle_play()
 
     def _action(self, text: str, icon: str, handler):
         item = button(text, None, icon)
@@ -580,10 +712,13 @@ class StudioPage(QWidget):
         if hasattr(self, "generate_button"):
             self.generate_button.setText(f"Générer {count} variante{'s' if count > 1 else ''}")
             busy = self.main.thread is not None
-            self.generate_button.setEnabled(bool(rushes) and not busy)
-            self.regenerate_button.setEnabled(bool(rushes) and not busy)
+            needs_script = self.subtitle_toggle.isChecked() and not self.script_edit.toPlainText().strip()
+            self.generate_button.setEnabled(bool(rushes) and not busy and not needs_script)
+            self.regenerate_button.setEnabled(bool(rushes) and not busy and not needs_script)
             if not rushes:
                 self.cta_hint.setText("Ajoute au moins un rush pour lancer le montage.")
+            elif needs_script:
+                self.cta_hint.setText("Colle ou importe le script pour les sous-titres, ou décoche-les.")
             else:
                 total = sum(media.duration or 0 for media in rushes)
                 self.cta_hint.setText(f"{len(rushes)} rush{'s' if len(rushes) > 1 else ''} · "
@@ -608,6 +743,7 @@ class StudioPage(QWidget):
             item.setSizeHint(QSize(160, 124))
             self.rush_list.addItem(item)
         self.rush_panel.setVisible(bool(rushes))
+        self._refresh_recent()
         self._ensure_thumbnails(store, rushes)
         self.drop_zone.setMinimumHeight(110 if rushes else 150)
         self.drop_zone.title.setText("Ajoute d'autres rushs" if rushes else "Glisse tes rushs ici")
@@ -703,6 +839,8 @@ class StudioPage(QWidget):
             outro=self.outro_edit.text().strip() if self.outro_toggle.isChecked() else "",
             variants=self.variant_count.value(), draft=bool(self.preview_mode.value()),
             clean_noise=self.clean_noise.isChecked(),
+            script=self.script_edit.toPlainText() if self.subtitle_toggle.isChecked() else "",
+            subtitles=self.subtitle_grouping.value() if self.subtitle_toggle.isChecked() else "off",
         )
 
     def generate(self):

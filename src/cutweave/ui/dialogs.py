@@ -8,6 +8,7 @@ import subprocess
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QCheckBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout, QGridLayout, QGroupBox, QHBoxLayout, QLabel,
+    QPlainTextEdit,
     QLineEdit, QMessageBox, QPushButton, QTableWidget, QTableWidgetItem, QTextEdit, QVBoxLayout, QWidget,
 )
 
@@ -267,3 +268,117 @@ class PipelinePanel(QWidget):
             for column, value in enumerate((label, status, str(detail)[:160])):
                 self.status_table.setItem(row, column, QTableWidgetItem(value))
         self.status_table.resizeColumnsToContents()
+
+
+class ScriptDialog(QDialog):
+    """Saisie d'un script (texte prononcé) à caler sur la voix : collé ou importé depuis un fichier."""
+
+    def __init__(self, parent=None, *, title="Aligner un script", with_replace=True):
+        super().__init__(parent)
+        from cutweave.ui.widgets import Segmented, button, label
+
+        self.setWindowTitle(title)
+        self.resize(640, 520)
+        self.setMinimumWidth(480)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(24, 22, 24, 20)
+        layout.setSpacing(12)
+        layout.addWidget(label(title, "h2"))
+        layout.addWidget(label("Colle le texte exactement comme il est prononcé, dans l'ordre. CUTWEAVE ne reconnaît pas "
+                               "la parole (aucune IA) : il cale ton texte sur les syllabes et les pauses de la voix pour "
+                               "obtenir des sous-titres précis.", "muted", wrap=True))
+        self.text = QPlainTextEdit()
+        self.text.setPlaceholderText("Colle ici le script… Les indications [entre crochets] sont ignorées.")
+        layout.addWidget(self.text, 1)
+        row = QHBoxLayout()
+        load = button("Importer un fichier…", None, "upload")
+        load.clicked.connect(self._load)
+        row.addWidget(load)
+        row.addStretch(1)
+        self.grouping = Segmented((("Phrases", "phrase"), ("Mot à mot", "words")))
+        row.addWidget(self.grouping)
+        layout.addLayout(row)
+        self.replace = QCheckBox("Remplacer les captions existantes")
+        self.replace.setChecked(True)
+        self.replace.setVisible(with_replace)
+        layout.addWidget(self.replace)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self._accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def _load(self):
+        from cutweave.subtitles.script import script_from_file
+
+        path, _ = QFileDialog.getOpenFileName(self, "Importer un script", "",
+                                              "Texte et sous-titres (*.txt *.md *.srt *.vtt *.ass);;Tous les fichiers (*.*)")
+        if not path:
+            return
+        try:
+            self.text.setPlainText(script_from_file(path))
+        except Exception as exc:  # fichier illisible ou sous-titres invalides : message clair
+            QMessageBox.warning(self, "Import impossible", str(exc))
+
+    def _accept(self):
+        if not self.text.toPlainText().strip():
+            QMessageBox.information(self, "Script vide", "Colle ou importe d'abord le texte prononcé.")
+            return
+        self.accept()
+
+    @property
+    def script(self) -> str:
+        return self.text.toPlainText()
+
+
+class AboutDialog(QDialog):
+    """À propos : identité, licence, composants et rapport de diagnostic copiable."""
+
+    def __init__(self, parent=None, project_root=None):
+        super().__init__(parent)
+        from PySide6.QtGui import QGuiApplication
+
+        from cutweave import __version__
+        from cutweave.core.health import collect_diagnostics
+        from cutweave.ui.branding import logo_pixmap
+        from cutweave.ui.widgets import button, label
+
+        self.setWindowTitle("À propos de CUTWEAVE")
+        self.resize(620, 560)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(28, 24, 28, 20)
+        layout.setSpacing(12)
+        head = QHBoxLayout()
+        head.setSpacing(16)
+        logo = QLabel()
+        logo.setPixmap(logo_pixmap(72))
+        logo.setFixedSize(72, 72)
+        head.addWidget(logo)
+        titles = QVBoxLayout()
+        titles.setSpacing(2)
+        titles.addWidget(label("CUTWEAVE", "h1"))
+        titles.addWidget(label(f"Version {__version__} · Montage vidéo automatique, local et sans IA", "muted", wrap=True))
+        head.addLayout(titles, 1)
+        layout.addLayout(head)
+        layout.addWidget(label(
+            "Logiciel libre sous licence MIT. Aucun compte, aucune télémétrie, aucune connexion réseau : tes rushs et "
+            "tes projets ne quittent jamais ton ordinateur. Les montages reposent sur des règles et du traitement du "
+            "signal classique (mouvement, netteté, niveau sonore, périodicité de la voix, syllabes), jamais sur un "
+            "modèle d'IA.", "muted", wrap=True))
+        layout.addWidget(label("Composants : Qt for Python (LGPL), OpenCV (Apache 2.0), NumPy (BSD), FFmpeg (installé "
+                               "séparément, licence selon le build). Détails dans docs/LICENCES.md.", "faint", wrap=True))
+        layout.addWidget(label("DIAGNOSTIC", "step"))
+        self.report = QTextEdit()
+        self.report.setReadOnly(True)
+        self.report.setPlainText(collect_diagnostics(project_root))
+        self.report.setStyleSheet("font-family: Consolas, 'Cascadia Mono', Menlo, monospace; font-size: 9pt;")
+        layout.addWidget(self.report, 1)
+        row = QHBoxLayout()
+        copy = button("Copier le diagnostic", None, "layers")
+        copy.clicked.connect(lambda: (QGuiApplication.clipboard().setText(self.report.toPlainText()),
+                                      copy.setText("Copié")))
+        row.addWidget(copy)
+        row.addStretch(1)
+        close = button("Fermer", "primary", "check")
+        close.clicked.connect(self.accept)
+        row.addWidget(close)
+        layout.addLayout(row)

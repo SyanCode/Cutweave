@@ -17,6 +17,7 @@ class CaptionCue:
     start_ms: int
     end_ms: int
     text: str
+    placement: str = ""      # "" : position du preset (en bas) ; "top" : en haut (titres au-dessus de sous-titres)
 
     def validate(self) -> None:
         if self.start_ms < 0:
@@ -25,6 +26,8 @@ class CaptionCue:
             raise CaptionParseError("La fin d'un segment doit être postérieure à son début.")
         if not self.text.strip():
             raise CaptionParseError("Un segment ne peut pas être vide.")
+        if self.placement not in {"", "top"}:
+            raise CaptionParseError("Le placement d'un segment doit être vide ou « top ».")
 
 
 @dataclass(frozen=True)
@@ -55,7 +58,7 @@ def split_cue(cue: CaptionCue, at_ms: int) -> tuple[CaptionCue, CaptionCue]:
         first, second = text[:boundary].strip(), text[boundary:].strip()
     if not first or not second:
         raise CaptionParseError("Le texte est trop court pour être scindé.")
-    return CaptionCue(cue.start_ms, at_ms, first), CaptionCue(at_ms, cue.end_ms, second)
+    return CaptionCue(cue.start_ms, at_ms, first, cue.placement), CaptionCue(at_ms, cue.end_ms, second, cue.placement)
 
 
 def merge_cues(cues: tuple[CaptionCue, ...] | list[CaptionCue]) -> CaptionCue:
@@ -64,7 +67,7 @@ def merge_cues(cues: tuple[CaptionCue, ...] | list[CaptionCue]) -> CaptionCue:
     first, second = sorted(cues, key=lambda cue: cue.start_ms)
     first.validate()
     second.validate()
-    return CaptionCue(first.start_ms, max(first.end_ms, second.end_ms), f"{first.text}\n{second.text}")
+    return CaptionCue(first.start_ms, max(first.end_ms, second.end_ms), f"{first.text}\n{second.text}", first.placement)
 
 
 _SRT_TIME = re.compile(

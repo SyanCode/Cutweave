@@ -4,12 +4,24 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cutweave"
-version = "0.1.0"
-description = "Montage vidéo déterministe et local pour Windows"
+version = "0.2.0"
+description = "Montage vidéo automatique, local et sans IA : rushs + style = variantes prêtes à exporter"
 readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "MIT" }
 authors = [{ name = "CUTWEAVE contributors" }]
+keywords = ["video", "editing", "ffmpeg", "subtitles", "automatic", "local", "offline"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: X11 Applications :: Qt",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: MIT License",
+    "Natural Language :: French",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Multimedia :: Video :: Non-Linear Editor",
+]
 dependencies = [
     "PySide6-Essentials>=6.7,<7",
     "PySide6-Addons>=6.7,<7",
@@ -19,6 +31,11 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["pytest>=8.0,<9"]
 build = ["pyinstaller>=6.10,<7"]
+
+[project.urls]
+Documentation = "https://github.com/SyanCode/Cutweave/blob/main/README.md"
+Source = "https://github.com/SyanCode/Cutweave"
+Changelog = "https://github.com/SyanCode/Cutweave/blob/main/CHANGELOG.md"
 
 [project.scripts]
 cutweave-cli = "cutweave.cli:main"
@@ -32,7 +49,14 @@ package-dir = {"" = "src"}
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+cutweave = ["ui/resources/*"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["src"]
+pythonpath = ["src", "tests"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
 

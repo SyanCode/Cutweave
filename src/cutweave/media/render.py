@@ -314,6 +314,8 @@ def build_ass_content(
             duration = min(preset.animation_ms, cue.end_ms - cue.start_ms)
             tags.append(f"\\fscx75\\fscy75\\t(0,{duration},\\fscx100\\fscy100)")
         text = sanitize_caption_markup(cue.text)
+        if cue.placement == "top":
+            tags.insert(0, "\\an8")
         if tags:
             text = "{" + "".join(tags) + "}" + text
         lines.append(

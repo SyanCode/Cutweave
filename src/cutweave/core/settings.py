@@ -31,6 +31,7 @@ class AppSettings:
     ffprobe_path: str = ""
     log_dir: str = ""
     projects_dir: str = ""
+    recent_projects: str = ""      # chemins séparés par des retours à la ligne, du plus récent au plus ancien
 
     @classmethod
     def load(cls, path: Path | None = None) -> "AppSettings":
@@ -55,6 +56,17 @@ class AppSettings:
         finally:
             temporary.unlink(missing_ok=True)
         return target
+
+    def recent(self) -> list[str]:
+        return [line for line in self.recent_projects.splitlines() if line.strip()]
+
+    def add_recent(self, path: str | Path, limit: int = 8) -> None:
+        entry = str(Path(path))
+        kept = [item for item in self.recent() if item != entry]
+        self.recent_projects = "\n".join([entry, *kept][:limit])
+
+    def forget_recent(self, path: str | Path) -> None:
+        self.recent_projects = "\n".join(item for item in self.recent() if item != str(Path(path)))
 
     def validate(self) -> None:
         for label, value in (("FFmpeg", self.ffmpeg_path), ("FFprobe", self.ffprobe_path)):

@@ -36,8 +36,12 @@ def main() -> int:
     _install_excepthook()
     app = QApplication(sys.argv)
     app.setApplicationName("CUTWEAVE")
+    app.setApplicationVersion(__version__)
     app.setOrganizationName("CUTWEAVE")
+    from cutweave.ui.branding import app_icon
     from cutweave.ui.main_window import MainWindow
+
+    app.setWindowIcon(app_icon())
 
     window = MainWindow()
     window.show()

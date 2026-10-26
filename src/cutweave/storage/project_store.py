@@ -136,6 +136,7 @@ class ProjectStore:
                     start_ms INTEGER NOT NULL CHECK(start_ms >= 0),
                     end_ms INTEGER NOT NULL CHECK(end_ms > start_ms),
                     text TEXT NOT NULL,
+                    placement TEXT NOT NULL DEFAULT '',
                     PRIMARY KEY(media_id, ordinal)
                 );
                 CREATE TABLE IF NOT EXISTS framing_keyframes (
@@ -281,6 +282,9 @@ class ProjectStore:
                 connection.execute("ALTER TABLE mask_regions ADD COLUMN effect TEXT NOT NULL DEFAULT 'opaque'")
             if "blur_radius" not in mask_columns:
                 connection.execute("ALTER TABLE mask_regions ADD COLUMN blur_radius INTEGER NOT NULL DEFAULT 12")
+            caption_columns = {row["name"] for row in connection.execute("PRAGMA table_info(captions)")}
+            if "placement" not in caption_columns:
+                connection.execute("ALTER TABLE captions ADD COLUMN placement TEXT NOT NULL DEFAULT ''")
 
     def _stored_path(self, media_path: Path) -> str:
         try:
@@ -328,17 +332,17 @@ class ProjectStore:
         with self._connect() as connection:
             connection.execute("DELETE FROM captions WHERE media_id=?", (media_id,))
             connection.executemany(
-                "INSERT INTO captions(media_id,ordinal,start_ms,end_ms,text) VALUES(?,?,?,?,?)",
-                [(media_id, ordinal, cue.start_ms, cue.end_ms, cue.text)
+                "INSERT INTO captions(media_id,ordinal,start_ms,end_ms,text,placement) VALUES(?,?,?,?,?,?)",
+                [(media_id, ordinal, cue.start_ms, cue.end_ms, cue.text, cue.placement)
                  for ordinal, cue in enumerate(ordered)],
             )
 
     def get_captions(self, media_id: int) -> tuple[CaptionCue, ...]:
         with self._connect() as connection:
             rows = connection.execute(
-                "SELECT start_ms,end_ms,text FROM captions WHERE media_id=? ORDER BY ordinal", (media_id,)
+                "SELECT start_ms,end_ms,text,placement FROM captions WHERE media_id=? ORDER BY ordinal", (media_id,)
             ).fetchall()
-        return tuple(CaptionCue(row["start_ms"], row["end_ms"], row["text"]) for row in rows)
+        return tuple(CaptionCue(row["start_ms"], row["end_ms"], row["text"], row["placement"]) for row in rows)
 
     def set_framing_keyframes(self, media_id: int, keyframes: tuple[FramingKeyframe, ...] | list[FramingKeyframe]) -> None:
         ordered = tuple(keyframes)

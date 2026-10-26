@@ -20,6 +20,7 @@ from cutweave.assets import library
 from cutweave.autoedit.analysis import RushAnalysis, analyze_rush
 from cutweave.autoedit.assemble import render_plan
 from cutweave.autoedit.beats import tempo_of_file
+from cutweave.core.cache_tools import prune_oldest
 from cutweave.autoedit.modes import MODES_BY_KEY, VARIANTS, EditMode, VariantProfile
 from cutweave.autoedit.planner import EditPlan, EditRequest, MusicChoice, build_plan
 from cutweave.core.pipeline import ProgressEvent, collect_job, run_job
@@ -30,6 +31,8 @@ from cutweave.stages.composition.captions import CaptionCue
 from cutweave.stages.finishing.caption_presets import BUILTIN_BY_NAME
 from cutweave.stages.finishing.music import DuckingSegment, MusicSettings, SfxPlacement
 from cutweave.storage.project_store import ProjectMedia, ProjectStore
+from cutweave.subtitles.cues import cues_for_plan
+from cutweave.subtitles.service import align_to_rushes, check_inputs, subtitle_preset
 
 LOGGER = logging.getLogger("cutweave.autoedit")
 MONTAGE_DIR = "montages"
@@ -57,6 +60,8 @@ class StudioRequest:
     variants: int = 3
     draft: bool = True
     clean_noise: bool = True
+    script: str = ""             # texte prononcé : permet de caler des sous-titres sur la voix (sans reconnaissance vocale)
+    subtitles: str = "off"       # off | phrase | words
 
     @property
     def is_draft(self) -> bool:
@@ -97,6 +102,7 @@ class VariantResult:
     draft: bool = False          # aperçu rapide : le master sera refait en pleine qualité à l'export
     final_width: int = 0
     final_height: int = 0
+    subtitle_quality: float = -1.0   # fiabilité 0..1 du calage du script ; -1 : pas de sous-titres
 
     def to_json(self) -> dict:
         return asdict(self)
@@ -157,7 +163,8 @@ def _audio_asset(store: ProjectStore, path: Path, category: str, tags: Sequence[
     return store.add_audio_asset(path, probe_audio(path), category=category, tags=tuple(tags))
 
 
-def configure_media(store: ProjectStore, media: ProjectMedia, plan: EditPlan, *, aspect: str, assets_root=None) -> None:
+def configure_media(store: ProjectStore, media: ProjectMedia, plan: EditPlan, *, aspect: str, assets_root=None,
+                    subtitle_cues=(), subtitle_preset: str | None = None) -> None:
     """Écrit les réglages éditables de la variante : chaque élément reste modifiable ensuite."""
     duration_ms = round((media.duration or plan.duration) * 1000)
     for module in ("captions", "music", "sfx", "sharpening"):
@@ -170,14 +177,19 @@ def configure_media(store: ProjectStore, media: ProjectMedia, plan: EditPlan, *,
     store.set_broll_placements(media.id, ())
     cues = []
     total = duration_ms / 1000
+    placement = "top" if subtitle_cues else ""      # titres en haut quand des sous-titres occupent le bas
     if plan.title:
-        cues.append(CaptionCue(250, round(min(2.8, max(1.0, total * 0.4)) * 1000), plan.title))
+        cues.append(CaptionCue(250, round(min(2.8, max(1.0, total * 0.4)) * 1000), plan.title, placement))
     if plan.outro and total > 4:
         start = max(cues[-1].end_ms + 200 if cues else 0, duration_ms - 2600)
         if duration_ms - 100 > start:
-            cues.append(CaptionCue(start, duration_ms - 100, plan.outro))
+            cues.append(CaptionCue(start, duration_ms - 100, plan.outro, placement))
+    for cue in subtitle_cues:
+        if cue.start_ms < duration_ms - 50:
+            cues.append(CaptionCue(cue.start_ms, min(cue.end_ms, duration_ms), cue.text))
     store.set_captions(media.id, tuple(cues))
-    store.set_caption_preset(media.id, BUILTIN_BY_NAME.get(plan.caption_preset.casefold(), BUILTIN_BY_NAME["clean"]))
+    preset_name = (subtitle_preset or plan.caption_preset).casefold()
+    store.set_caption_preset(media.id, BUILTIN_BY_NAME.get(preset_name, BUILTIN_BY_NAME["clean"]))
 
     store.set_music_mix(media.id, None)
     if plan.music is not None and plan.music.path:
@@ -258,6 +270,14 @@ def generate_variants(
             future.result()
     report(0.12, "Analyse terminée : construction des variantes")
 
+    aligned = None
+    if request.subtitles != "off":
+        report(0.12, "Alignement du script sur la voix…")
+        check_inputs(request.script, request.subtitles)
+        aligned = align_to_rushes(request.script, analyses)
+        report(0.13, f"Script calé sur la voix ({aligned.result.quality:.0%} de fiabilité, "
+                     f"{aligned.result.matched_ratio:.0%} des syllabes appariées)")
+
     edit_request = EditRequest(request.mode, width, height, request.duration, request.look, request.music,
                                request.fit, request.title, request.outro, request.clean_noise)
     has_audio = {analysis.path: analysis.has_audio for analysis in analyses}
@@ -272,6 +292,7 @@ def generate_variants(
         music = resolve_music(request.music, mode, variant, assets_root=assets_root, cancel_event=cancel_event)
         plan = build_plan(analyses, mode, variant, edit_request, music)
         key = f"{mode.key}_{variant.letter}"
+        subtitle_cues = cues_for_plan(aligned.result.words, plan, request.subtitles) if aligned else ()
         folder = store.root / MONTAGE_DIR
         _write_json(folder / f"{key}.plan.json", plan.to_json())
         master = render_plan(
@@ -280,7 +301,10 @@ def generate_variants(
         )
         cancelled()
         media = store.add_media(master, probe_media(master, cancel_event=cancel_event))
-        configure_media(store, media, plan, aspect=request.aspect, assets_root=assets_root)
+        configure_media(store, media, plan, aspect=request.aspect, assets_root=assets_root,
+                        subtitle_cues=subtitle_cues,
+                        subtitle_preset=subtitle_preset(mode.key, request.subtitles, mode.caption_preset)
+                        if aligned else None)
         report(base + share * 0.55, f"{label} : musique, effets et titres")
         job = collect_job(store, media)
         preview = run_job(
@@ -306,10 +330,15 @@ def generate_variants(
             music_title=music.title if music else "Sans musique", look_title=look.title if look else plan.look,
             aspect=request.aspect, created_at=created, draft=request.is_draft,
             final_width=final_width, final_height=final_height,
+            subtitle_quality=round(aligned.result.quality, 3) if aligned else -1.0,
         )
         _write_json(folder / f"{key}.result.json", result.to_json())
         results.append(result)
         report(base + share, f"{label} prête : {plan.summary}")
+    try:
+        prune_oldest(store.cache_root)
+    except OSError as exc:
+        LOGGER.warning("Élagage du cache impossible : %s", exc)
     return results
 
 
